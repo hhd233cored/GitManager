@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/GitManager.Core/GitManager.Core.csproj" />
+  <Project Path="src/GitManager.App/GitManager.App.csproj" />
+  <Project Path="tests/GitManager.Tests/GitManager.Tests.csproj" />
+  <Project Path="tests/GitManager.UiChecks/GitManager.UiChecks.csproj" />
+</Solution>
