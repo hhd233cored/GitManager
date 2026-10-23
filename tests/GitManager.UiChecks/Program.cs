@@ -20,8 +20,12 @@ internal static class Program
         var repository = Path.GetFullPath(args[0]);
         var output = Path.GetFullPath(args[1]);
         Directory.CreateDirectory(output);
-        var app = new GitManager.App.App { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-        app.InitializeComponent();
+        // Use the real theme, while tests own their window and settings instead of launching App.OnStartup.
+        var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        {
+            Source = new Uri("/GitManager;component/Themes/Light.xaml", UriKind.Relative)
+        });
         var bindings = new BindingTraceListener();
         PresentationTraceSources.DataBindingSource.Listeners.Add(bindings);
         PresentationTraceSources.DataBindingSource.Switch.Level = SourceLevels.Error;
@@ -37,19 +41,46 @@ internal static class Program
                 await Until(() => !vm.IsBusy && vm.HasRepository && !vm.IsLoadingDetails && !vm.IsLoadingDiff && vm.Diff is not null, "load initial repository");
                 Assert(vm.Error.Length == 0, vm.Error);
                 Assert(vm.SelectedCommit is not null && vm.Files.Count > 0 && vm.Commits.Count >= 12, "History did not load real Git data.");
+                await ChangesAndMenuChecks.CheckMenusAsync(window, output);
+                if (args.Contains("--review-only", StringComparer.Ordinal))
+                {
+                    await CompactDetailsChecks.RunAsync(window, output, Render, reviewRepository: true);
+                    Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
+                    return;
+                }
+                if (args.Contains("--layout-only", StringComparer.Ordinal))
+                {
+                    await CompactDetailsChecks.RunAsync(window, output, Render);
+                    await ConcurrentHistoryChecks.RunAsync(window, output, Render);
+                    Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
+                    return;
+                }
+                if (args.Contains("--appearance-only", StringComparer.Ordinal))
+                {
+                    await AppearanceChecks.RunAsync(window, output, Render);
+                    Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
+                    return;
+                }
+                if (args.Contains("--workspace-only", StringComparer.Ordinal))
+                {
+                    await WorkspaceChecks.RunAsync(window, repository, output, Render);
+                    Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
+                    return;
+                }
                 await Render(window, Path.Combine(output, "history.png"));
                 var commits = (ListBox)window.FindName("CommitList");
                 var details = (Grid)window.FindName("DetailsPane");
-                var files = (Grid)window.FindName("HistoryFilesPane");
+                var changes = (Grid)window.FindName("ChangesPane");
+                var history = (Grid)window.FindName("HistoryPane");
                 var diff = (Grid)window.FindName("DiffPane");
                 var diffView = (DiffView)window.FindName("FileDiffView");
                 var commitBounds = Bounds(commits, window);
                 var detailBounds = Bounds(details, window);
-                var fileBounds = Bounds(files, window);
+                var changesBounds = Bounds(changes, window);
+                var historyBounds = Bounds(history, window);
                 var diffBounds = Bounds(diff, window);
-                Assert(commitBounds.Right <= detailBounds.Left + 2, "Commit list must stay on the left.");
-                Assert(fileBounds.Right <= diffBounds.Left + 2, "Changed files must be left of Diff within the right pane.");
-                Assert(fileBounds.Top > detailBounds.Top + 60, "Metadata must be above the changed files and Diff.");
+                Assert(changesBounds.Right <= historyBounds.Left && commitBounds.Right <= detailBounds.Left, "Changes, History and shared Diff must be side by side.");
+                Assert(diffBounds.Top > detailBounds.Top + 60, "Metadata must be above the shared Diff.");
                 Assert(diffView.ActualWidth > 300 && diffView.ActualHeight > 300, "Diff viewport is too small.");
                 Assert(Descendants<GraphCell>(commits).Any(), "Graph column is not rendered.");
 
@@ -78,13 +109,12 @@ internal static class Program
                 Assert(!vm.IsSplitDiff, "Unified diff switch did not update.");
                 await Render(window, Path.Combine(output, "history-unified.png"));
                 ((ToggleButton)window.FindName("SplitDiffButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                ((ToggleButton)window.FindName("ChangesTab")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                ((ListBox)window.FindName("ChangesList")).SelectedItem = vm.WorkingFiles.First();
                 await Until(() => !vm.IsLoadingDiff, "Changes navigation");
-                Assert(vm.IsChanges, "Changes tab did not activate.");
-                Assert(((ColumnDefinition)window.FindName("FilesColumn")).Width.Value == 0, "History file column must collapse in Changes.");
+                Assert(vm.IsChanges && changes.IsVisible && history.IsVisible, "Selecting Changes must keep History visible.");
                 Assert(vm.ChangeCount > 0, "Fixture should include working tree changes.");
                 await Render(window, Path.Combine(output, "changes.png"));
-                ((ToggleButton)window.FindName("HistoryTab")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                vm.SelectedCommit = selected;
                 await Until(() => !vm.IsLoadingDetails && !vm.IsLoadingDiff && vm.Diff is not null, "return to History");
                 Assert(vm.IsHistory && vm.Files.Count > 0, "Returning to History lost file selection.");
                 var tracked = vm.SelectedCommit;
@@ -119,18 +149,27 @@ internal static class Program
                 await runner.RunAsync(scratch, ["config", "commit.gpgSign", "false"]);
                 await runner.RunAsync(scratch, ["config", "core.hooksPath", ".git/no-hooks"]);
                 await File.WriteAllTextAsync(Path.Combine(scratch, "UI 检查.txt"), "UI staging and commit check\n");
+                // Closing the folder picker reactivates the main window and starts an automatic refresh.
+                var activationRefresh = vm.RefreshAsync(silent: true);
                 await vm.OpenRepositoryAsync(scratch);
+                await activationRefresh;
+                Assert(Path.GetFullPath(vm.Repository!.Path) == scratch, "Opening a second repository was silently dropped while activation refresh was running.");
                 vm.IsHistory = false;
                 await Until(() => !vm.IsBusy && !vm.IsLoadingDiff && vm.Files.Count > 0, "load scratch working tree");
-                await vm.ToggleStageAsync(vm.Files.Single(file => file.Path == "UI 检查.txt"));
-                Assert(vm.StagedCount == 1 && vm.Error.Length == 0, "Staging through the ViewModel failed.");
+                Assert(vm.IncludedCount == 1 && vm.StagedCount == 0 && vm.Error.Length == 0, "New changes should be selected without changing the Git index.");
                 vm.Summary = "test: commit through WPF command";
-                Assert(vm.CommitCommand.CanExecute(null), "Commit command should be enabled for a staged file and summary.");
+                Assert(vm.CommitCommand.CanExecute(null), "Commit command should be enabled for a selected file and summary.");
                 vm.CommitCommand.Execute(null);
                 await Until(() => !vm.IsBusy && vm.ChangeCount == 0, "commit scratch change");
                 Assert(vm.Summary.Length == 0 && vm.Error.Length == 0, "Commit did not clear the form or update status.");
+                await RepositoryChecks.RunAsync(window, repository, output, Render);
+                await ChangesAndMenuChecks.RunAsync(window, repository, output, Render);
+                await WorkspaceChecks.RunAsync(window, repository, output, Render);
+                await AppearanceChecks.RunAsync(window, output, Render);
+                await ConcurrentHistoryChecks.RunAsync(window, output, Render);
+                await CompactDetailsChecks.RunAsync(window, output, Render);
                 Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
-                Console.WriteLine("PASS WPF startup, real data, graph rendering, pane geometry, metadata, branch filtering, search, Diff modes, tabs, selection, compact layout, 12,000-row virtualization, staging and commit command.");
+                Console.WriteLine("PASS WPF compact history, graph, wrapped Diff, virtualization, repository management, unified sync, commit inclusion, menus and capsule scrollbars.");
                 Console.WriteLine($"Screenshots: {output}");
             }
             catch (Exception ex) { Console.Error.WriteLine(ex); exitCode = 1; }
@@ -181,4 +220,5 @@ internal static class Program
         public override void Write(string? message) { if (!string.IsNullOrWhiteSpace(message)) Errors.Add(message); }
         public override void WriteLine(string? message) => Write(message);
     }
+
 }

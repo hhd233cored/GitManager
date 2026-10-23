@@ -3,11 +3,14 @@ using System.Text.Json;
 
 namespace GitManager.App.Infrastructure;
 
-public sealed record AppSettings(List<string> RecentRepositories, string? LastRepository, bool AllBranches = true);
+public sealed record AppSettings(List<string> RecentRepositories, string? LastRepository, bool AllBranches = true,
+    List<RepositoryEntry>? Repositories = null);
 
 public sealed class SettingsStore
 {
-    private readonly string _path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GitManager", "settings.json");
+    private readonly string _path;
+    public SettingsStore(string? path = null) => _path = path ?? Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GitManager", "settings.json");
     public AppSettings Load()
     {
         try
@@ -17,7 +20,7 @@ public sealed class SettingsStore
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
         return new([], null);
     }
-    public void Save(AppSettings settings)
+    public string? Save(AppSettings settings)
     {
         try
         {
@@ -25,7 +28,8 @@ public sealed class SettingsStore
             var temporaryPath = _path + ".tmp";
             File.WriteAllText(temporaryPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
             File.Move(temporaryPath, _path, overwrite: true);
+            return null;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return ex.Message; }
     }
 }

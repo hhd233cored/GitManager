@@ -6,7 +6,7 @@ namespace GitManager.Core;
 public sealed class GitRunner
 {
     public async Task<GitResult> RunAsync(string directory, IEnumerable<string> arguments,
-        CancellationToken cancellationToken = default, bool throwOnError = true)
+        CancellationToken cancellationToken = default, bool throwOnError = true, string? standardInput = null)
     {
         var start = new ProcessStartInfo("git")
         {
@@ -15,6 +15,7 @@ public sealed class GitRunner
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = standardInput is not null,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
@@ -40,10 +41,18 @@ public sealed class GitRunner
         });
         var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var error = process.StandardError.ReadToEndAsync(cancellationToken);
+        if (standardInput is not null)
+        {
+            await process.StandardInput.WriteAsync(standardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+            process.StandardInput.Close();
+        }
         await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         var result = new GitResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
         if (throwOnError && result.ExitCode != 0)
-            throw new GitException(string.IsNullOrWhiteSpace(result.Error) ? result.Output.Trim() : result.Error.Trim(), result.ExitCode);
+        {
+            var message = string.IsNullOrWhiteSpace(result.Error) ? result.Output.Trim() : result.Error.Trim();
+            throw new GitException(message.Length > 0 ? message : $"Git 操作失败（退出代码 {result.ExitCode}）。", result.ExitCode);
+        }
         return result;
     }
 }

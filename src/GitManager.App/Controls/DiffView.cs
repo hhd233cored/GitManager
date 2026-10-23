@@ -9,7 +9,7 @@ using GitManager.Core;
 
 namespace GitManager.App.Controls;
 
-// Draw only visible rows: even a very large patch has a small, constant visual tree.
+// Keep an index of wrapped row heights, and draw only rows intersecting the viewport.
 public sealed class DiffView : FrameworkElement, IScrollInfo
 {
     public static readonly DependencyProperty DocumentProperty = DependencyProperty.Register(nameof(Document), typeof(DiffDocument), typeof(DiffView),
@@ -20,14 +20,18 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
     public bool IsSplit { get => (bool)GetValue(IsSplitProperty); set => SetValue(IsSplitProperty, value); }
     private const double RowHeight = 23;
     private const double Gutter = 48;
+    private const double TextInset = 23;
+    private const double TextRightPadding = 10;
     private readonly Typeface _typeface = new("Cascadia Mono, Consolas");
+    private readonly Dictionary<(int Row, int Pane), FormattedText> _visibleText = [];
+    private double[] _rowOffsets = [0];
+    private bool _layoutDirty = true;
+    private double _asciiAdvance;
     private Size _viewport;
     private Size _extent;
     private double _verticalOffset;
-    private double _horizontalOffset;
     private int _selectionStart = -1;
     private int _selectionEnd = -1;
-    private int _longestLine;
     private static readonly Brush TextColor = Brush("#24292F");
     private static readonly Brush Muted = Brush("#87939F");
     private static readonly Brush BorderColor = Brush("#E2E7EC");
@@ -42,6 +46,7 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
     private static readonly Brush StringColor = Brush("#0A3069");
     private static readonly Regex Syntax = new("(\"[^\"]*\"|'[^']*')|\\b(public|private|protected|internal|class|sealed|static|void|return|new|var|using|namespace|async|await|if|else|true|false|null|const|let|function|import|from|export|interface|readonly|string|int|bool)\\b|//.*$", RegexOptions.Compiled);
     private int Count => Document is null ? 0 : IsSplit ? Document.Pairs.Count : Document.Lines.Count;
+    internal int CachedTextCount => _visibleText.Count;
 
     public DiffView()
     {
@@ -69,28 +74,82 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
     {
         var view = (DiffView)d;
         view._verticalOffset = 0;
-        view._horizontalOffset = 0;
         view._selectionStart = view._selectionEnd = -1;
-        view._longestLine = view.Document?.Lines.MaxBy(line => line.Text.Length)?.Text.Length ?? 0;
+        view._layoutDirty = true;
+        view._rowOffsets = [0];
+        view._visibleText.Clear();
         view.UpdateScrollInfo();
     }
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        return new Size(double.IsInfinity(availableSize.Width) ? 700 : availableSize.Width,
-            double.IsInfinity(availableSize.Height) ? 400 : availableSize.Height);
-    }
+    protected override Size MeasureOverride(Size availableSize) => new(
+        double.IsInfinity(availableSize.Width) ? 700 : availableSize.Width,
+        double.IsInfinity(availableSize.Height) ? 400 : availableSize.Height);
+
     protected override Size ArrangeOverride(Size finalSize)
     {
+        var widthChanged = Math.Abs(finalSize.Width - _viewport.Width) > .01;
+        var anchor = RowAtOffset(_verticalOffset);
+        var fraction = anchor < 0 ? 0 : (_verticalOffset - _rowOffsets[anchor]) / (_rowOffsets[anchor + 1] - _rowOffsets[anchor]);
         _viewport = finalSize;
+        if (widthChanged) _layoutDirty = true;
+        EnsureRowLayout();
+        if (widthChanged && anchor >= 0 && anchor < Count)
+            _verticalOffset = _rowOffsets[anchor] + fraction * (_rowOffsets[anchor + 1] - _rowOffsets[anchor]);
         UpdateScrollInfo();
         return finalSize;
     }
+    protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+    {
+        base.OnDpiChanged(oldDpi, newDpi);
+        _layoutDirty = true;
+        _asciiAdvance = 0;
+        InvalidateMeasure();
+    }
+    private double CodeWidth => Math.Max(1, (IsSplit ? _viewport.Width / 2 - Gutter : _viewport.Width - Gutter * 2) - TextInset - TextRightPadding);
+    private double HeaderWidth => Math.Max(1, _viewport.Width - 28);
+
+    private void EnsureRowLayout()
+    {
+        if (!_layoutDirty || _viewport.Width <= 0) return;
+        _layoutDirty = false;
+        _visibleText.Clear();
+        _rowOffsets = new double[Count + 1];
+        if (Document is null) return;
+        if (_asciiAdvance == 0) _asciiAdvance = Math.Max(Format("M", TextColor).WidthIncludingTrailingWhitespace, Format("W", TextColor).WidthIncludingTrailingWhitespace);
+        var heights = new Dictionary<(string Text, bool Header), double>();
+        double Height(DiffLine? line, bool header = false)
+        {
+            if (line is null || line.Text.Length == 0) return RowHeight;
+            var key = (line.Text, header);
+            if (heights.TryGetValue(key, out var cached)) return cached;
+            var width = header ? HeaderWidth : CodeWidth;
+            // ASCII code that fits the fixed-pitch font needs no paragraph layout.
+            var fits = !header && !line.Text.Contains('\t') && line.Text.Length * _asciiAdvance <= width - 1
+                && line.Text.All(character => character is >= ' ' and <= '~');
+            var height = fits ? RowHeight : Math.Max(RowHeight, FormatWrapped(line.Text, width, header, false).Height);
+            heights[key] = height;
+            return height;
+        }
+        for (var index = 0; index < Count; index++)
+        {
+            double height;
+            if (IsSplit)
+            {
+                var pair = Document.Pairs[index];
+                height = pair.IsHeader ? Height(pair.Left, true) : Math.Max(Height(pair.Left), Height(pair.Right));
+            }
+            else
+            {
+                var line = Document.Lines[index];
+                height = Height(line, line.Kind is DiffKind.Hunk or DiffKind.Information);
+            }
+            _rowOffsets[index + 1] = _rowOffsets[index] + height;
+        }
+    }
     private void UpdateScrollInfo()
     {
-        var textWidth = Math.Min(_longestLine, 5000) * 8.1 + 35;
-        _extent = new Size(Math.Max(_viewport.Width, IsSplit ? (textWidth + Gutter) * 2 : textWidth + Gutter * 2), Count * RowHeight);
+        EnsureRowLayout();
+        _extent = new Size(_viewport.Width, _rowOffsets.Length == Count + 1 ? _rowOffsets[^1] : Count * RowHeight);
         _verticalOffset = Math.Clamp(_verticalOffset, 0, Math.Max(0, _extent.Height - _viewport.Height));
-        _horizontalOffset = Math.Clamp(_horizontalOffset, 0, Math.Max(0, _extent.Width - _viewport.Width));
         ScrollOwner?.InvalidateScrollInfo();
         InvalidateVisual();
     }
@@ -101,82 +160,108 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
         if (Document is null || Count == 0)
         {
             var message = Document is null ? "选择文件后，差异将显示在这里" : "此文件没有文本差异（可能仅修改了文件名、权限或二进制内容）";
-            var text = Format(message, Muted, 12, false);
+            var text = FormatWrapped(message, Math.Max(1, _viewport.Width - 48), true, false);
             dc.DrawText(text, new Point(24, 30));
             return;
         }
-        var first = Math.Max(0, (int)(_verticalOffset / RowHeight));
-        var last = Math.Min(Count, first + (int)Math.Ceiling(_viewport.Height / RowHeight) + 1);
+        EnsureRowLayout();
+        if (_rowOffsets.Length != Count + 1) return;
+        var first = RowAtOffset(_verticalOffset);
+        var last = Math.Min(Count, RowAtOffset(_verticalOffset + _viewport.Height) + 1);
+        foreach (var key in _visibleText.Keys.Where(key => key.Row < first - 1 || key.Row > last).ToArray()) _visibleText.Remove(key);
         for (var index = first; index < last; index++)
         {
-            var y = index * RowHeight - _verticalOffset;
+            var y = _rowOffsets[index] - _verticalOffset;
+            var height = _rowOffsets[index + 1] - _rowOffsets[index];
             if (IsSplit)
             {
                 var pair = Document.Pairs[index];
-                if (pair.IsHeader) DrawHeader(dc, pair.Left!, y);
+                if (pair.IsHeader) DrawHeader(dc, pair.Left!, index, y, height);
                 else
                 {
                     var half = _viewport.Width / 2;
-                    DrawPane(dc, pair.Left, 0, half, y, true);
-                    DrawPane(dc, pair.Right, half, _viewport.Width - half, y, false);
+                    DrawPane(dc, pair.Left, index, 0, half, y, height, true);
+                    DrawPane(dc, pair.Right, index, half, _viewport.Width - half, y, height, false);
                 }
             }
-            else DrawUnified(dc, Document.Lines[index], y);
+            else DrawUnified(dc, Document.Lines[index], index, y, height);
             if (_selectionStart >= 0 && index >= Math.Min(_selectionStart, _selectionEnd) && index <= Math.Max(_selectionStart, _selectionEnd))
-                dc.DrawRectangle(SelectionColor, null, new Rect(0, y, _viewport.Width, RowHeight));
+                dc.DrawRectangle(SelectionColor, null, new Rect(0, y, _viewport.Width, height));
         }
         if (IsSplit) dc.DrawLine(new Pen(BorderColor, 1), new Point(_viewport.Width / 2, 0), new Point(_viewport.Width / 2, _viewport.Height));
     }
 
-    private void DrawHeader(DrawingContext dc, DiffLine line, double y)
+    private FormattedText VisibleText(int index, int pane, string text, bool header = false)
     {
-        dc.DrawRectangle(line.Kind == DiffKind.Hunk ? HunkColor : EmptyColor, null, new Rect(0, y, _viewport.Width, RowHeight));
-        dc.PushClip(new RectangleGeometry(new Rect(12, y, Math.Max(0, _viewport.Width - 24), RowHeight)));
-        dc.DrawText(Format(line.Text, Muted, 11.5), new Point(14, y + 3));
+        if (!_visibleText.TryGetValue((index, pane), out var formatted))
+        {
+            formatted = FormatWrapped(text, header ? HeaderWidth : CodeWidth, header, !header);
+            _visibleText[(index, pane)] = formatted;
+        }
+        return formatted;
+    }
+    private void DrawHeader(DrawingContext dc, DiffLine line, int index, double y, double height)
+    {
+        dc.DrawRectangle(line.Kind == DiffKind.Hunk ? HunkColor : EmptyColor, null, new Rect(0, y, _viewport.Width, height));
+        dc.PushClip(new RectangleGeometry(new Rect(12, y, Math.Max(0, _viewport.Width - 24), height)));
+        dc.DrawText(VisibleText(index, 2, line.Text, true), new Point(14, y));
         dc.Pop();
     }
-
-    private void DrawPane(DrawingContext dc, DiffLine? line, double x, double width, double y, bool left)
+    private void DrawPane(DrawingContext dc, DiffLine? line, int index, double x, double width, double y, double height, bool left)
     {
-        var rect = new Rect(x, y, Math.Max(0, width), RowHeight);
+        var rect = new Rect(x, y, Math.Max(0, width), height);
         var background = line is null ? EmptyColor : line.Kind == DiffKind.Addition ? Added : line.Kind == DiffKind.Deletion ? Removed : Brushes.White;
         dc.DrawRectangle(background, null, rect);
         var gutterBackground = line?.Kind == DiffKind.Addition ? AddedGutter : line?.Kind == DiffKind.Deletion ? RemovedGutter : EmptyColor;
-        dc.DrawRectangle(gutterBackground, null, new Rect(x, y, Math.Min(Gutter, width), RowHeight));
+        dc.DrawRectangle(gutterBackground, null, new Rect(x, y, Math.Min(Gutter, width), height));
         if (line is null) return;
+        var code = VisibleText(index, left ? 0 : 1, line.Text);
         var number = left ? line.OldNumber : line.NewNumber;
         if (number.HasValue)
         {
             var formatted = Format(number.Value.ToString(CultureInfo.InvariantCulture), Muted, 11);
-            dc.DrawText(formatted, new Point(x + Gutter - formatted.Width - 8, y + 3));
+            dc.DrawText(formatted, new Point(x + Gutter - formatted.Width - 8, y + code.Baseline - formatted.Baseline));
         }
         var mark = line.Kind == DiffKind.Addition ? "+" : line.Kind == DiffKind.Deletion ? "−" : " ";
-        dc.PushClip(new RectangleGeometry(new Rect(x + Gutter, y, Math.Max(0, width - Gutter), RowHeight)));
-        dc.DrawText(Format(mark, Muted), new Point(x + Gutter + 7 - _horizontalOffset / 2, y + 3));
-        dc.DrawText(Format(line.Text, TextColor, syntax: true), new Point(x + Gutter + 23 - _horizontalOffset / 2, y + 3));
+        var marker = Format(mark, Muted);
+        dc.PushClip(new RectangleGeometry(new Rect(x + Gutter, y, Math.Max(0, width - Gutter), height)));
+        dc.DrawText(marker, new Point(x + Gutter + 7, y + code.Baseline - marker.Baseline));
+        dc.DrawText(code, new Point(x + Gutter + TextInset, y));
         dc.Pop();
     }
-
-    private void DrawUnified(DrawingContext dc, DiffLine line, double y)
+    private void DrawUnified(DrawingContext dc, DiffLine line, int index, double y, double height)
     {
-        if (line.Kind is DiffKind.Hunk or DiffKind.Information) { DrawHeader(dc, line, y); return; }
+        if (line.Kind is DiffKind.Hunk or DiffKind.Information) { DrawHeader(dc, line, index, y, height); return; }
         var background = line.Kind == DiffKind.Addition ? Added : line.Kind == DiffKind.Deletion ? Removed : Brushes.White;
-        dc.DrawRectangle(background, null, new Rect(0, y, _viewport.Width, RowHeight));
+        dc.DrawRectangle(background, null, new Rect(0, y, _viewport.Width, height));
         var gutter = line.Kind == DiffKind.Addition ? AddedGutter : line.Kind == DiffKind.Deletion ? RemovedGutter : EmptyColor;
-        dc.DrawRectangle(gutter, null, new Rect(0, y, Gutter * 2, RowHeight));
-        if (line.OldNumber.HasValue) dc.DrawText(Format(line.OldNumber.Value.ToString(CultureInfo.InvariantCulture), Muted, 11), new Point(10, y + 3));
-        if (line.NewNumber.HasValue) dc.DrawText(Format(line.NewNumber.Value.ToString(CultureInfo.InvariantCulture), Muted, 11), new Point(Gutter + 10, y + 3));
+        dc.DrawRectangle(gutter, null, new Rect(0, y, Math.Min(Gutter * 2, _viewport.Width), height));
+        var code = VisibleText(index, 3, line.Text);
+        void DrawNumber(int number, double x)
+        {
+            var formatted = Format(number.ToString(CultureInfo.InvariantCulture), Muted, 11);
+            dc.DrawText(formatted, new Point(x, y + code.Baseline - formatted.Baseline));
+        }
+        if (line.OldNumber.HasValue) DrawNumber(line.OldNumber.Value, 10);
+        if (line.NewNumber.HasValue) DrawNumber(line.NewNumber.Value, Gutter + 10);
         var mark = line.Kind == DiffKind.Addition ? "+" : line.Kind == DiffKind.Deletion ? "−" : " ";
-        dc.PushClip(new RectangleGeometry(new Rect(Gutter * 2, y, Math.Max(0, _viewport.Width - Gutter * 2), RowHeight)));
-        dc.DrawText(Format(mark, Muted), new Point(Gutter * 2 + 7 - _horizontalOffset, y + 3));
-        dc.DrawText(Format(line.Text, TextColor, syntax: true), new Point(Gutter * 2 + 23 - _horizontalOffset, y + 3));
+        var marker = Format(mark, Muted);
+        dc.PushClip(new RectangleGeometry(new Rect(Gutter * 2, y, Math.Max(0, _viewport.Width - Gutter * 2), height)));
+        dc.DrawText(marker, new Point(Gutter * 2 + 7, y + code.Baseline - marker.Baseline));
+        dc.DrawText(code, new Point(Gutter * 2 + TextInset, y));
         dc.Pop();
     }
-
+    private FormattedText FormatWrapped(string text, double width, bool header, bool syntax)
+    {
+        var formatted = Format(text, header ? Muted : TextColor, header ? 11.5 : 12, syntax);
+        formatted.MaxTextWidth = width;
+        formatted.Trimming = TextTrimming.None; // Also forces emergency wrapping of unbroken identifiers/URLs.
+        formatted.LineHeight = RowHeight;
+        return formatted;
+    }
     private FormattedText Format(string text, Brush foreground, double size = 12, bool syntax = false)
     {
         text = text.Replace("\t", "    ");
-        if (text.Length > 5000) text = text[..5000] + " …";
         var formatted = new FormattedText(text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
             _typeface, size, foreground, VisualTreeHelper.GetDpi(this).PixelsPerDip);
         if (syntax && text.Length < 2000)
@@ -190,12 +275,18 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
         return formatted;
     }
 
+    internal int RowAtOffset(double offset)
+    {
+        if (_rowOffsets.Length <= 1) return -1;
+        var found = Array.BinarySearch(_rowOffsets, Math.Max(0, offset));
+        return Math.Clamp(found >= 0 ? found : ~found - 1, 0, _rowOffsets.Length - 2);
+    }
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonDown(e);
         Focus();
         if (Count == 0) return;
-        _selectionStart = _selectionEnd = Math.Clamp((int)((e.GetPosition(this).Y + _verticalOffset) / RowHeight), 0, Count - 1);
+        _selectionStart = _selectionEnd = RowAtOffset(e.GetPosition(this).Y + _verticalOffset);
         CaptureMouse();
         InvalidateVisual();
         e.Handled = true;
@@ -204,7 +295,7 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
     {
         base.OnMouseMove(e);
         if (!IsMouseCaptured || Count == 0) return;
-        _selectionEnd = Math.Clamp((int)((e.GetPosition(this).Y + _verticalOffset) / RowHeight), 0, Count - 1);
+        _selectionEnd = RowAtOffset(e.GetPosition(this).Y + _verticalOffset);
         InvalidateVisual();
     }
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e) { base.OnMouseLeftButtonUp(e); ReleaseMouseCapture(); }
@@ -222,37 +313,46 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
         }
         e.Handled = true;
     }
+    internal string SelectionText(int first, int last)
+    {
+        if (Document is null || Count == 0) return "";
+        var start = Math.Clamp(Math.Min(first, last), 0, Count - 1);
+        var count = Math.Clamp(Math.Max(first, last), 0, Count - 1) - start + 1;
+        var lines = IsSplit ? Document.Pairs.Skip(start).Take(count).Select(pair => (pair.Right ?? pair.Left)?.Text ?? "")
+            : Document.Lines.Skip(start).Take(count).Select(line => line.Text);
+        return string.Join(Environment.NewLine, lines);
+    }
     private void CopySelection()
     {
-        if (Document is null || _selectionStart < 0) return;
-        var first = Math.Min(_selectionStart, _selectionEnd);
-        var count = Math.Abs(_selectionStart - _selectionEnd) + 1;
-        var lines = IsSplit ? Document.Pairs.Skip(first).Take(count).Select(pair => (pair.Right ?? pair.Left)?.Text ?? "")
-            : Document.Lines.Skip(first).Take(count).Select(line => line.Text);
-        Clipboard.SetText(string.Join(Environment.NewLine, lines));
+        if (_selectionStart >= 0 && Document is not null) Clipboard.SetText(SelectionText(_selectionStart, _selectionEnd));
     }
-    public bool CanHorizontallyScroll { get; set; }
+    public bool CanHorizontallyScroll { get => false; set { } }
     public bool CanVerticallyScroll { get; set; }
     public double ExtentWidth => _extent.Width;
     public double ExtentHeight => _extent.Height;
     public double ViewportWidth => _viewport.Width;
     public double ViewportHeight => _viewport.Height;
-    public double HorizontalOffset => _horizontalOffset;
+    public double HorizontalOffset => 0;
     public double VerticalOffset => _verticalOffset;
     public ScrollViewer? ScrollOwner { get; set; }
-    public void SetHorizontalOffset(double offset) { _horizontalOffset = Math.Clamp(offset, 0, Math.Max(0, ExtentWidth - ViewportWidth)); UpdateScrollInfo(); }
-    public void SetVerticalOffset(double offset) { _verticalOffset = Math.Clamp(offset, 0, Math.Max(0, ExtentHeight - ViewportHeight)); UpdateScrollInfo(); }
+    public void SetHorizontalOffset(double offset) { }
+    public void SetVerticalOffset(double offset)
+    {
+        if (double.IsNaN(offset)) return;
+        _verticalOffset = offset;
+        UpdateScrollInfo();
+    }
     public void LineDown() => SetVerticalOffset(VerticalOffset + RowHeight);
     public void LineUp() => SetVerticalOffset(VerticalOffset - RowHeight);
-    public void LineLeft() => SetHorizontalOffset(HorizontalOffset - 32);
-    public void LineRight() => SetHorizontalOffset(HorizontalOffset + 32);
+    public void LineLeft() { }
+    public void LineRight() { }
     public void MouseWheelDown() => SetVerticalOffset(VerticalOffset + RowHeight * 3);
     public void MouseWheelUp() => SetVerticalOffset(VerticalOffset - RowHeight * 3);
-    public void MouseWheelLeft() => LineLeft();
-    public void MouseWheelRight() => LineRight();
+    public void MouseWheelLeft() { }
+    public void MouseWheelRight() { }
     public void PageDown() => SetVerticalOffset(VerticalOffset + Math.Max(RowHeight, ViewportHeight - RowHeight));
     public void PageUp() => SetVerticalOffset(VerticalOffset - Math.Max(RowHeight, ViewportHeight - RowHeight));
-    public void PageLeft() => SetHorizontalOffset(HorizontalOffset - ViewportWidth);
-    public void PageRight() => SetHorizontalOffset(HorizontalOffset + ViewportWidth);
+    public void PageLeft() { }
+    public void PageRight() { }
     public Rect MakeVisible(Visual visual, Rect rectangle) => rectangle;
 }

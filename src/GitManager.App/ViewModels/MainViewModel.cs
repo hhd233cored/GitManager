@@ -2,14 +2,15 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows.Input;
 using GitManager.App.Infrastructure;
+using GitManager.App.Controls;
 using GitManager.Core;
 
 namespace GitManager.App.ViewModels;
 
-public sealed class MainViewModel : ObservableObject, IDisposable
+public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     private readonly GitService _git = new();
-    private readonly SettingsStore _store = new();
+    private readonly SettingsStore _store;
     private readonly bool _persistSettings;
     private bool _updatingCommits;
     private bool _updatingFiles;
@@ -17,6 +18,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _operationCancellation;
     private CancellationTokenSource? _selectionCancellation;
     private CancellationTokenSource? _diffCancellation;
+    private CancellationTokenSource _repositoryCancellation = new();
     private FileSystemWatcher? _watcher;
     private readonly System.Windows.Threading.DispatcherTimer _refreshTimer;
     private bool _disposed;
@@ -37,7 +39,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private int _historyLimit = 300;
     private bool _canLoadMore;
     private CommitItem? _selectedCommit;
-    private ChangedFile? _selectedFile;
+    private FileItem? _selectedFile;
+    private FileItem? _selectedWorkingFile;
     private DiffDocument? _diff;
     private bool _isLoadingDetails;
     private bool _isLoadingDiff;
@@ -45,25 +48,39 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private IReadOnlyList<ChangedFile> _workingFiles = [];
     private IReadOnlyList<ChangedFile> _commitFiles = [];
     private readonly Dictionary<string, string> _historyFileSelections = [];
+    private readonly Dictionary<string, CommitDetails> _commitDetails = new(StringComparer.Ordinal);
     private string? _workingSelectionPath;
+    private readonly Dictionary<string, string> _fetchTimes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HashSet<string>> _excludedFiles = new(StringComparer.OrdinalIgnoreCase);
 
-    public MainViewModel(bool persistSettings = true)
+    public MainViewModel(bool persistSettings = true, SettingsStore? settingsStore = null)
     {
         _persistSettings = persistSettings;
+        _store = settingsStore ?? new SettingsStore();
         var settings = persistSettings ? _store.Load() : new AppSettings([], null);
         _allBranches = settings.AllBranches;
-        foreach (var path in settings.RecentRepositories.Where(Directory.Exists).Take(10)) RecentRepositories.Add(path);
+        var savedRepositories = settings.Repositories ?? (settings.RecentRepositories ?? []).Select(path => new RepositoryEntry(path)).ToList();
+        foreach (var entry in savedRepositories)
+        {
+            try
+            {
+                var normalized = entry with { Path = RepositoryEntry.NormalizePath(entry.Path) };
+                if (!Repositories.Any(existing => RepositoryEntry.SamePath(existing.Path, normalized.Path))) Repositories.Add(normalized);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { }
+        }
         LastRepository = settings.LastRepository;
         RefreshCommand = new AsyncCommand(() => RefreshAsync(), () => HasRepository && !IsBusy);
         FetchCommand = new AsyncCommand(FetchAsync, () => HasRepository && Repository!.HasRemote && !IsBusy);
         PullCommand = new AsyncCommand(PullAsync, () => HasRepository && Repository!.Upstream is not null && !IsBusy);
-        PushCommand = new AsyncCommand(PushAsync, () => HasRepository && Repository!.HasRemote && Repository.HasHead && !IsBusy);
-        CommitCommand = new AsyncCommand(CommitAsync, () => HasRepository && !IsBusy && StagedCount > 0 && !string.IsNullOrWhiteSpace(Summary));
-        StageAllCommand = new AsyncCommand(() => StageAsync(null), () => HasRepository && !IsBusy && _workingFiles.Any(file => file.HasUnstagedChanges));
-        UnstageAllCommand = new AsyncCommand(() => UnstageAsync(null), () => HasRepository && !IsBusy && StagedCount > 0);
+        PushCommand = new AsyncCommand(PushAsync, () => HasRepository && Repository!.HasRemote && Repository.HasHead && !Repository.IsDetached && !IsBusy);
+        SyncCommand = new AsyncCommand(ExecuteSyncAsync, () => !IsBusy && SyncState.IsEnabled);
+        CommitCommand = new AsyncCommand(CommitAsync, () => HasRepository && !IsBusy && IncludedCount > 0 && !string.IsNullOrWhiteSpace(Summary));
+        ToggleAllChangesCommand = new RelayCommand(() => SetAllChangesIncluded(AllChangesIncluded != true), () => HasRepository && ChangeCount > 0 && !IsBusy);
         LoadMoreCommand = new AsyncCommand(async () => { _historyLimit += 300; await RefreshAsync(); }, () => HasRepository && CanLoadMore && !IsBusy);
         CancelCommand = new RelayCommand(() => _operationCancellation?.Cancel(), () => IsBusy);
         DismissErrorCommand = new RelayCommand(() => Error = "");
+        ClearHistoryPathCommand = new RelayCommand(ClearHistoryPath, () => HasHistoryPathFilter);
         _refreshTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(900) };
         _refreshTimer.Tick += async (_, _) =>
         {
@@ -74,21 +91,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     public event Action<string>? OperationCompleted;
-    public string? LastRepository { get; }
-    public ObservableCollection<string> RecentRepositories { get; } = [];
+    public string? LastRepository { get; private set; }
+    public ObservableCollection<RepositoryEntry> Repositories { get; } = [];
     public ObservableCollection<CommitItem> Commits { get; } = [];
-    public ObservableCollection<ChangedFile> Files { get; } = [];
+    public ObservableCollection<FileItem> Files { get; } = [];
+    public ObservableCollection<FileItem> WorkingFiles { get; } = [];
     public ObservableCollection<BranchInfo> Branches { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand FetchCommand { get; }
     public ICommand PullCommand { get; }
     public ICommand PushCommand { get; }
+    public ICommand SyncCommand { get; }
     public ICommand CommitCommand { get; }
-    public ICommand StageAllCommand { get; }
-    public ICommand UnstageAllCommand { get; }
+    public ICommand ToggleAllChangesCommand { get; }
     public ICommand LoadMoreCommand { get; }
     public ICommand CancelCommand { get; }
     public ICommand DismissErrorCommand { get; }
+    public ICommand ClearHistoryPathCommand { get; }
 
     public RepositoryInfo? Repository
     {
@@ -97,20 +116,46 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (!Set(ref _repository, value)) return;
             foreach (var name in new[] { nameof(HasRepository), nameof(RepositoryName), nameof(BranchName), nameof(SyncStatus), nameof(PushLabel), nameof(CommitButtonLabel), nameof(RepositoryPath) }) Raise(name);
+            RaiseSyncProperties();
         }
     }
     public bool HasRepository => Repository is not null;
-    public string RepositoryName => Repository?.Name ?? "打开本地仓库";
+    public string RepositoryName => Repository is null ? "添加本地仓库"
+        : Repositories.FirstOrDefault(entry => RepositoryEntry.SamePath(entry.Path, Repository.Path))?.Name ?? Repository.Name;
     public string RepositoryPath => Repository?.Path ?? "选择文件夹或克隆远程仓库";
     public string BranchName => Repository?.Branch ?? "未选择仓库";
     public string SyncStatus => Repository is null ? "本地 Git 客户端" : Repository.Upstream is null ? "尚未跟踪远程分支" : $"↑ {Repository.Ahead}   ↓ {Repository.Behind}  ·  {Repository.Upstream}";
     public string PushLabel => Repository?.Upstream is null ? "发布分支" : "Push";
-    public string LastFetched { get => _lastFetched; private set => Set(ref _lastFetched, value); }
-    public bool IsBusy { get => _isBusy; private set { Set(ref _isBusy, value); CommandManager.InvalidateRequerySuggested(); } }
+    public RepositorySyncState SyncState => RepositorySyncState.From(Repository);
+    public string SyncTitle => SyncState.Label;
+    public string SyncGlyph => SyncState.Glyph;
+    public string SyncBadge => SyncState.Badge;
+    public bool HasSyncBadge => SyncBadge.Length > 0;
+    public string SyncSubtitle => Repository is null ? "选择仓库以同步"
+        : !Repository.HasRemote ? "尚未配置远程仓库"
+        : Repository.IsDetached ? "分离的 HEAD · 可获取远程更新"
+        : Repository.Ahead > 0 && Repository.Behind > 0 ? "分支已分叉 · 需先合并或变基"
+        : SyncState.Action == SyncAction.Publish ? "将当前分支发布到远程"
+        : LastFetched.Length > 0 ? LastFetched : "尚未获取远程更新";
+    public string SyncToolTip => !SyncState.IsEnabled ? SyncSubtitle : SyncState.Action switch
+    {
+        SyncAction.Pull => "拉取远程更新（仅快进）；分支分叉时保留现状并显示 Git 错误。",
+        SyncAction.Push => "推送当前分支到它的上游分支。",
+        SyncAction.Publish => $"发布当前分支到 {SyncState.RemoteName}，并设置上游分支。",
+        _ => $"从 {SyncState.RemoteName} 获取远程更新，不修改工作区。"
+    };
+    public bool CanManageRepositories => !IsBusy;
+    public string LastFetched { get => _lastFetched; private set { Set(ref _lastFetched, value); RaiseSyncProperties(); } }
+    public bool IsBusy
+    {
+        get => _isBusy;
+        private set { Set(ref _isBusy, value); Raise(nameof(CanManageRepositories)); CommandManager.InvalidateRequerySuggested(); }
+    }
     public string BusyMessage { get => _busyMessage; private set => Set(ref _busyMessage, value); }
     public string Error { get => _error; private set { Set(ref _error, value); Raise(nameof(HasError)); } }
     public bool HasError => Error.Length > 0;
     public string Notice { get => _notice; private set => Set(ref _notice, value); }
+    // Selects the shared Diff source; Changes and History themselves are always visible.
     public bool IsHistory
     {
         get => _isHistory;
@@ -118,7 +163,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (!Set(ref _isHistory, value)) return;
             Raise(nameof(IsChanges));
-            FileSearch = "";
+            if (value)
+            {
+                _selectedWorkingFile = null;
+                Raise(nameof(SelectedWorkingFile));
+            }
             UpdateFiles();
             if (value && SelectedCommit is not null) _ = LoadCommitDetailsAsync(SelectedCommit);
             RaiseDetailProperties();
@@ -146,22 +195,32 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         get => _historySearch;
         set { if (Set(ref _historySearch, value)) UpdateCommitFilter(); }
     }
-    public string FileSearch { get => _fileSearch; set { if (Set(ref _fileSearch, value)) UpdateFiles(); } }
+    public string FileSearch
+    {
+        get => _fileSearch;
+        set
+        {
+            if (!Set(ref _fileSearch, value)) return;
+            UpdateWorkingFiles();
+            if (IsChanges) UpdateFiles();
+        }
+    }
     public string Summary { get => _summary; set { Set(ref _summary, value); CommandManager.InvalidateRequerySuggested(); } }
     public string Description { get => _description; set => Set(ref _description, value); }
     public int ChangeCount => _workingFiles.Count;
     public int StagedCount => _workingFiles.Count(file => file.HasStagedChanges);
+    public int IncludedCount => _workingFiles.Count(file => IsFileIncluded(file.Path));
+    public bool? AllChangesIncluded => ChangeCount == 0 || IncludedCount == 0 ? false : IncludedCount == ChangeCount ? true : null;
     public int CommitCount => _allCommits.Count;
     public int FileCount => IsHistory ? _commitFiles.Count : _workingFiles.Count;
-    public string CommitButtonLabel => $"提交到 {BranchName}";
+    public string CommitButtonLabel => $"提交 {IncludedCount} 个文件到 {BranchName}";
     public bool CanLoadMore { get => _canLoadMore; private set => Set(ref _canLoadMore, value); }
     public bool IsLoadingDetails { get => _isLoadingDetails; private set => Set(ref _isLoadingDetails, value); }
     public bool IsLoadingDiff { get => _isLoadingDiff; private set => Set(ref _isLoadingDiff, value); }
     public bool HasCommit => IsHistory && SelectedCommit is not null;
-    public string DetailSubject => IsHistory ? SelectedCommit?.Commit.Subject ?? "选择一条提交" : "工作区变更";
-    public string DetailBody => IsHistory ? SelectedCommit?.Commit.Body ?? "" : "选择文件查看变更，勾选文件暂存到下一次提交。";
+    public string DetailSubject => IsHistory ? SelectedCommit?.Commit.Subject ?? (HasHistoryPathFilter ? "该路径没有匹配的已加载提交" : "选择一条提交") : "工作区变更";
+    public string DetailBody => IsHistory ? SelectedCommit?.Commit.Body ?? "" : "选择文件查看变更，勾选要包含在本次提交中的文件。";
     public string DetailAuthor => SelectedCommit?.Commit.Author ?? "";
-    public string DetailEmail => SelectedCommit?.Commit.Email ?? "";
     public string DetailDate => SelectedCommit?.Commit.Date.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz") ?? "";
     public string DetailSha => SelectedCommit?.Commit.Id ?? "";
     public string DetailShortSha => SelectedCommit?.Commit.ShortId ?? "";
@@ -173,31 +232,53 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string FileTitle => SelectedFile?.DisplayPath ?? "选择一个文件查看 Diff";
     public string FileStatus => SelectedFile?.StatusLabel ?? "";
     public bool CanChooseDiffSource => IsChanges && SelectedFile is { HasStagedChanges: true, HasUnstagedChanges: true };
-    public string DiffSourceLabel => IsHistory ? "提交变更" : ShowStagedDiff ? "已暂存的变更" : "工作区变更";
+    public string DiffSourceLabel => IsHistory ? "提交变更" : ShowStagedDiff ? "已暂存的变更" : "文件全部变更";
     public CommitItem? SelectedCommit
     {
         get => _selectedCommit;
         set
         {
             if (_updatingCommits) return;
-            if (!Set(ref _selectedCommit, value)) return;
+            if (value is { IsVisible: false }) return;
+            var changed = Set(ref _selectedCommit, value);
+            if (!IsHistory) { IsHistory = true; return; }
+            if (!changed) return;
             RaiseDetailProperties();
             if (IsHistory) _ = LoadCommitDetailsAsync(value);
         }
     }
-    public ChangedFile? SelectedFile
+    public FileItem? SelectedWorkingFile
+    {
+        get => _selectedWorkingFile;
+        set
+        {
+            if (_updatingFiles || value is null) return;
+            _workingSelectionPath = value.Path;
+            if (IsHistory) IsHistory = false;
+            SelectedFile = WorkingFiles.FirstOrDefault(file => file.Path == value.Path);
+        }
+    }
+    public FileItem? SelectedFile
     {
         get => _selectedFile;
         set
         {
             if (_updatingFiles) return;
+            var previous = _selectedFile;
             if (!Set(ref _selectedFile, value)) return;
+            if (previous is not null) previous.IsSelected = false;
+            if (value is not null) value.IsSelected = true;
             if (value is not null)
             {
                 if (IsHistory && SelectedCommit is not null) _historyFileSelections[SelectedCommit.Commit.Id] = value.Path;
                 else if (IsChanges) _workingSelectionPath = value.Path;
             }
-            if (value is not null && IsChanges) _showStagedDiff = value.HasStagedChanges && !value.HasUnstagedChanges;
+            if (value is not null && IsChanges) _showStagedDiff = false;
+            if (IsChanges)
+            {
+                _selectedWorkingFile = value;
+                Raise(nameof(SelectedWorkingFile));
+            }
             foreach (var name in new[] { nameof(FileTitle), nameof(FileStatus), nameof(CanChooseDiffSource), nameof(ShowStagedDiff), nameof(DiffSourceLabel) }) Raise(name);
             _ = LoadDiffAsync();
         }
@@ -210,43 +291,154 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public int Additions => Diff?.Additions ?? 0;
     public int Deletions => Diff?.Deletions ?? 0;
 
-    public async Task OpenRepositoryAsync(string path)
+    public Task OpenRepositoryAsync(string path) => RunOperationAsync("正在打开仓库…", ct => OpenRepositoryCoreAsync(path, ct));
+
+    public Task AddRepositoriesAsync(IEnumerable<string> paths)
     {
-        await RunOperationAsync("正在打开仓库…", async ct =>
+        var requestedPaths = paths.ToArray();
+        return RunOperationAsync("正在添加仓库…", async ct =>
         {
-            var repository = await _git.GetRepositoryAsync(path, ct);
-            _selectionCancellation?.Cancel();
-            _diffCancellation?.Cancel();
-            _watcher?.Dispose();
-            _historyLimit = 300;
-            _allCommits = [];
-            _commitFiles = [];
-            _workingFiles = [];
-            _selectedCommit = null;
-            _selectedFile = null;
-            _updatingCommits = _updatingFiles = true;
-            try { Commits.Clear(); Files.Clear(); Branches.Clear(); }
-            finally { _updatingCommits = _updatingFiles = false; }
-            _historyFileSelections.Clear();
-            _workingSelectionPath = null;
-            HistorySearch = "";
-            FileSearch = "";
-            Summary = "";
-            Description = "";
-            LastFetched = "";
-            Repository = repository;
-            Raise(nameof(SelectedCommit));
-            Raise(nameof(SelectedFile));
-            RaiseDetailProperties();
-            Diff = null;
-            await RefreshDataAsync(ct);
-            RecentRepositories.Remove(repository.Path);
-            RecentRepositories.Insert(0, repository.Path);
-            while (RecentRepositories.Count > 10) RecentRepositories.RemoveAt(RecentRepositories.Count - 1);
+            var initialCount = Repositories.Count;
+            var errors = new List<string>();
+            string? lastPath = null;
+            foreach (var requestedPath in requestedPaths)
+            {
+                try
+                {
+                    var info = await _git.GetRepositoryAsync(requestedPath, ct);
+                    RegisterRepository(info.Path);
+                    lastPath = info.Path;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { errors.Add($"{requestedPath}\n{ex.Message}"); }
+            }
             SaveSettings();
-            StartWatcher(repository.Path);
-            Notice = $"已打开 {repository.Name}";
+            if (lastPath is not null) await OpenRepositoryCoreAsync(lastPath, ct);
+            if (Repositories.Count > initialCount) Notice = $"已添加 {Repositories.Count - initialCount} 个仓库";
+            if (errors.Count > 0) Error = string.Join("\n\n", errors);
         });
+    }
+
+    private async Task OpenRepositoryCoreAsync(string path, CancellationToken ct)
+    {
+        if (!Directory.Exists(path)) throw new DirectoryNotFoundException($"找不到仓库文件夹：{path}\n请在管理仓库列表中更改位置。");
+        var repository = await _git.GetRepositoryAsync(path, ct);
+        ClearRepository();
+        RegisterRepository(repository.Path);
+        Repository = repository;
+        LastRepository = repository.Path;
+        LastFetched = _fetchTimes.GetValueOrDefault(repository.Path, "");
+        SaveSettings();
+        try { await RefreshDataAsync(ct); }
+        finally { StartWatcher(repository.Path); }
+        Notice = $"已打开 {RepositoryName}";
+    }
+
+    private void RegisterRepository(string path)
+    {
+        var normalized = RepositoryEntry.NormalizePath(path);
+        if (!Repositories.Any(entry => RepositoryEntry.SamePath(entry.Path, normalized))) Repositories.Add(new RepositoryEntry(normalized));
+    }
+
+    private void ClearRepository()
+    {
+        _refreshTimer.Stop();
+        _repositoryCancellation.Cancel();
+        _repositoryCancellation.Dispose();
+        _repositoryCancellation = new CancellationTokenSource();
+        _commitDetails.Clear();
+        _selectionCancellation?.Cancel();
+        _diffCancellation?.Cancel();
+        _watcher?.Dispose();
+        _watcher = null;
+        _historyLimit = 300;
+        _allCommits = [];
+        _commitFiles = [];
+        _workingFiles = [];
+        _selectedCommit = null;
+        _selectedFile = null;
+        _selectedWorkingFile = null;
+        _updatingCommits = _updatingFiles = true;
+        try { Commits.Clear(); Files.Clear(); WorkingFiles.Clear(); Branches.Clear(); }
+        finally { _updatingCommits = _updatingFiles = false; }
+        _historyFileSelections.Clear();
+        _workingSelectionPath = null;
+        Repository = null;
+        LastRepository = null;
+        ClearExplorer();
+        HistorySearch = "";
+        FileSearch = "";
+        Summary = "";
+        Description = "";
+        LastFetched = "";
+        Diff = null;
+        CanLoadMore = false;
+        IsLoadingDetails = IsLoadingDiff = false;
+        foreach (var name in new[] { nameof(SelectedCommit), nameof(SelectedFile), nameof(SelectedWorkingFile), nameof(CommitCount), nameof(ChangeCount), nameof(StagedCount), nameof(FileTitle), nameof(CanChooseDiffSource) }) Raise(name);
+        RaiseDetailProperties();
+        RaiseInclusionProperties();
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    public void RenameRepository(RepositoryEntry entry, string name)
+    {
+        var index = FindRepositoryIndex(entry.Path);
+        if (index < 0) return;
+        var displayName = name.Trim();
+        Repositories[index] = Repositories[index] with { DisplayName = displayName.Length > 0 ? displayName : null };
+        Raise(nameof(RepositoryName));
+        SaveSettings();
+    }
+
+    public void MoveRepository(RepositoryEntry entry, int offset)
+    {
+        var index = FindRepositoryIndex(entry.Path);
+        var target = index + offset;
+        if (index < 0 || target < 0 || target >= Repositories.Count) return;
+        Repositories.Move(index, target);
+        SaveSettings();
+    }
+
+    public Task RemoveRepositoryAsync(RepositoryEntry entry) => RunOperationAsync("正在更新仓库列表…", async ct =>
+    {
+        var index = FindRepositoryIndex(entry.Path);
+        if (index < 0) return;
+        var wasActive = RepositoryEntry.SamePath(Repository?.Path, entry.Path);
+        Repositories.RemoveAt(index);
+        _excludedFiles.Remove(entry.Path);
+        if (RepositoryEntry.SamePath(LastRepository, entry.Path)) LastRepository = null;
+        _fetchTimes.Remove(entry.Path);
+        if (wasActive)
+        {
+            ClearRepository();
+            var next = Repositories.Skip(index).Concat(Repositories.Take(index)).FirstOrDefault(candidate => Directory.Exists(candidate.Path));
+            SaveSettings();
+            if (next is not null) await OpenRepositoryCoreAsync(next.Path, ct);
+        }
+        SaveSettings();
+        Notice = $"已从列表移除 {entry.Name}";
+    });
+
+    public Task RelocateRepositoryAsync(RepositoryEntry entry, string path) => RunOperationAsync("正在更新仓库位置…", async ct =>
+    {
+        var info = await _git.GetRepositoryAsync(path, ct);
+        var index = FindRepositoryIndex(entry.Path);
+        if (index < 0) return;
+        if (Repositories.Where((_, candidate) => candidate != index).Any(candidate => RepositoryEntry.SamePath(candidate.Path, info.Path)))
+            throw new InvalidOperationException("该仓库已在列表中，请选择另一个位置。");
+        var wasActive = RepositoryEntry.SamePath(Repository?.Path, entry.Path);
+        Repositories[index] = Repositories[index] with { Path = info.Path };
+        if (wasActive) await OpenRepositoryCoreAsync(info.Path, ct);
+        Raise(nameof(RepositoryName));
+        SaveSettings();
+        Notice = "仓库位置已更新";
+    });
+
+    private int FindRepositoryIndex(string path)
+    {
+        for (var i = 0; i < Repositories.Count; i++)
+            if (RepositoryEntry.SamePath(Repositories[i].Path, path)) return i;
+        return -1;
     }
 
     public Task RefreshAsync(bool silent = false) => RunOperationAsync(silent ? "正在同步本地状态…" : "正在刷新仓库…", async ct =>
@@ -260,54 +452,66 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (Repository is null) return;
         var path = Repository.Path;
         var infoTask = _git.GetRepositoryAsync(path, ct);
-        var historyTask = _git.GetHistoryAsync(path, AllBranches, _historyLimit + 1, ct);
+        var historyTask = _git.GetHistoryPageAsync(path, AllBranches, _historyLimit, ct);
         var filesTask = _git.GetStatusAsync(path, ct);
         var branchesTask = _git.GetBranchesAsync(path, ct);
-        await Task.WhenAll(infoTask, historyTask, filesTask, branchesTask);
+        var treeTask = _git.GetRepositoryFilesAsync(path, ct);
+        await Task.WhenAll(infoTask, historyTask, filesTask, branchesTask, treeTask);
         Repository = await infoTask;
         var history = await historyTask;
-        CanLoadMore = history.Count > _historyLimit;
-        var shown = history.Take(_historyLimit).ToArray();
-        var layout = GraphLayout.Build(shown);
-        var width = Math.Max(40, layout.LaneCount * 16 + 20);
-        _allCommits = shown.Select((commit, i) => new CommitItem(commit, layout.Rows[i], width)).ToArray();
+        CanLoadMore = history.HasMore;
+        var shown = history.Commits;
+        var layout = history.Graph;
+        _allCommits = shown.Select((commit, i) => new CommitItem(commit, layout.Rows[i], GraphCell.WidthFor(layout.Rows[i]))
+        {
+            Details = GetCommitDetails(commit.Id)
+        }).ToArray();
         _workingFiles = await filesTask;
+        ReconcileInclusions();
+        UpdateWorkingFiles();
+        UpdateRepositoryTree(await treeTask);
         Branches.Clear();
         foreach (var branch in await branchesTask) Branches.Add(branch);
-        var previousId = SelectedCommit?.Commit.Id;
-        var updatedSelection = _allCommits.FirstOrDefault(item => item.Commit.Id == previousId) ?? _allCommits.FirstOrDefault();
-        _selectedCommit = updatedSelection;
-        _updatingCommits = true;
-        try
-        {
-            Commits.Clear();
-            foreach (var item in _allCommits) Commits.Add(item);
-        }
-        finally { _updatingCommits = false; }
-        UpdateCommitFilter();
+        await RefreshHistoryPathAsync(ct);
         Raise(nameof(SelectedCommit));
         Raise(nameof(CommitCount));
         Raise(nameof(ChangeCount));
         Raise(nameof(StagedCount));
+        RaiseInclusionProperties();
         RaiseDetailProperties();
         if (IsHistory) await LoadCommitDetailsAsync(SelectedCommit);
         else UpdateFiles(forceDiff: true);
         CommandManager.InvalidateRequerySuggested();
     }
 
-    private void UpdateCommitFilter()
+    private void UpdateCommitFilter(string? preferredId = null)
     {
-        // Keep graph topology intact while searching: matching commits are highlighted in the same history.
+        // Mask nodes and text while keeping every graph row and its geometry in place.
+        var selectedId = preferredId ?? SelectedCommit?.Commit.Id;
+        var rows = _allCommits.Select(item => item with { IsVisible = !HasHistoryPathFilter || _pathCommitIds?.Contains(item.Commit.Id) == true }).ToArray();
+        _updatingCommits = true;
+        try
+        {
+            Commits.Clear();
+            foreach (var item in rows) Commits.Add(item);
+        }
+        finally { _updatingCommits = false; }
+        var visible = rows.Where(item => item.IsVisible).ToArray();
+        var selection = (HasSearch ? visible.FirstOrDefault(IsSearchMatch) : null)
+            ?? visible.FirstOrDefault(item => item.Commit.Id == selectedId) ?? visible.FirstOrDefault();
+        var changed = !Equals(_selectedCommit, selection);
+        _selectedCommit = selection;
+        if (selectedId is null && selection is not null) selection.Details.IsExpanded = true;
+        if (changed && IsHistory) _ = LoadCommitDetailsAsync(selection);
+        Raise(nameof(SelectedCommit));
+        Raise(nameof(VisibleCommitCount));
+        Raise(nameof(HistoryPathSummary));
         Raise(nameof(HasSearch));
         Raise(nameof(SearchMatchCount));
-        if (!string.IsNullOrWhiteSpace(HistorySearch))
-        {
-            var match = _allCommits.FirstOrDefault(IsSearchMatch);
-            if (match is not null) SelectedCommit = match;
-        }
+        RaiseDetailProperties();
     }
     public bool HasSearch => !string.IsNullOrWhiteSpace(HistorySearch);
-    public int SearchMatchCount => HasSearch ? _allCommits.Count(IsSearchMatch) : 0;
+    public int SearchMatchCount => HasSearch ? Commits.Count(item => item.IsVisible && IsSearchMatch(item)) : 0;
     public bool IsSearchMatch(CommitItem item) => item.Commit.Subject.Contains(HistorySearch, StringComparison.OrdinalIgnoreCase)
         || item.Commit.Author.Contains(HistorySearch, StringComparison.OrdinalIgnoreCase)
         || item.Commit.Id.Contains(HistorySearch, StringComparison.OrdinalIgnoreCase)
@@ -316,7 +520,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public void SelectNextMatch()
     {
         if (!HasSearch) return;
-        var matches = _allCommits.Where(IsSearchMatch).ToArray();
+        var matches = Commits.Where(item => item.IsVisible && IsSearchMatch(item)).ToArray();
         if (matches.Length == 0) return;
         var index = Array.IndexOf(matches, SelectedCommit);
         SelectedCommit = matches[(index + 1) % matches.Length];
@@ -334,9 +538,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         IsLoadingDetails = true;
         try
         {
-            var files = await _git.GetCommitFilesAsync(Repository.Path, item.Commit, cancellation.Token);
+            await EnsureCommitFilesAsync(item).WaitAsync(cancellation.Token);
             if (cancellation.IsCancellationRequested || SelectedCommit?.Commit.Id != item.Commit.Id || !IsHistory) return;
-            _commitFiles = files;
+            _commitFiles = item.Details.Files.Select(file => file.File).ToArray();
             UpdateFiles(forceDiff: true);
         }
         catch (OperationCanceledException) { }
@@ -348,8 +552,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         var oldPath = IsHistory && SelectedCommit is not null
             ? _historyFileSelections.GetValueOrDefault(SelectedCommit.Commit.Id) : _workingSelectionPath;
-        var source = IsHistory ? _commitFiles : _workingFiles;
-        var filtered = source.Where(file => file.DisplayPath.Contains(FileSearch, StringComparison.OrdinalIgnoreCase)).ToArray();
+        var filtered = IsHistory ? SelectedCommit?.Details.Files.ToArray() ?? [] : WorkingFiles.ToArray();
         _updatingFiles = true;
         try
         {
@@ -357,11 +560,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             foreach (var file in filtered) Files.Add(file);
         }
         finally { _updatingFiles = false; }
-        var selection = filtered.FirstOrDefault(file => file.Path == oldPath) ?? filtered.FirstOrDefault();
+        var candidates = IsHistory && HasHistoryPathFilter ? filtered.Where(file => MatchesHistoryPath(file.File)).ToArray() : filtered;
+        var selection = candidates.FirstOrDefault(file => file.Path == oldPath) ?? candidates.FirstOrDefault() ?? filtered.FirstOrDefault();
         if (Equals(SelectedFile, selection) && forceDiff) _ = LoadDiffAsync();
         else SelectedFile = selection;
         Raise(nameof(SelectedFile));
         Raise(nameof(FileCount));
+    }
+
+    private void UpdateWorkingFiles()
+    {
+        _updatingFiles = true;
+        try
+        {
+            WorkingFiles.Clear();
+            foreach (var file in _workingFiles.Where(file => file.DisplayPath.Contains(FileSearch, StringComparison.OrdinalIgnoreCase)))
+                WorkingFiles.Add(new FileItem(file, IsFileIncluded(file.Path), InclusionChanged));
+            _selectedWorkingFile = IsChanges ? WorkingFiles.FirstOrDefault(file => file.Path == _workingSelectionPath) : null;
+        }
+        finally { _updatingFiles = false; }
+        Raise(nameof(SelectedWorkingFile));
     }
 
     private async Task LoadDiffAsync()
@@ -373,13 +591,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Diff = null;
         Raise(nameof(DiffSourceLabel));
         if (SelectedFile is null || Repository is null) return;
-        var file = SelectedFile;
+        var file = SelectedFile.File;
         var commit = IsHistory ? SelectedCommit?.Commit : null;
         if (IsHistory && commit is null) return;
         IsLoadingDiff = true;
         try
         {
-            var patch = await _git.GetDiffAsync(Repository.Path, file, commit, ShowStagedDiff, cancellation.Token);
+            var patch = await _git.GetDiffAsync(Repository.Path, file, commit, ShowStagedDiff, cancellation.Token, includeAllChanges: IsChanges && !ShowStagedDiff);
             var document = await Task.Run(() => DiffParser.Parse(patch), cancellation.Token);
             if (!cancellation.IsCancellationRequested) Diff = document;
         }
@@ -388,9 +606,40 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally { if (ReferenceEquals(cancellation, _diffCancellation)) IsLoadingDiff = false; }
     }
 
-    public Task ToggleStageAsync(ChangedFile file) => file.HasStagedChanges && !file.HasUnstagedChanges ? UnstageAsync(file) : StageAsync(file);
-    public Task StageAsync(ChangedFile? file) => MutateAsync("正在暂存变更…", ct => _git.StageAsync(Repository!.Path, file, ct), "已暂存所选变更");
-    public Task UnstageAsync(ChangedFile? file) => MutateAsync("正在取消暂存…", ct => _git.UnstageAsync(Repository!.Path, file, ct), "已取消暂存，工作区文件已保留");
+    public bool IsFileIncluded(string path) => Repository is not null
+        && (!_excludedFiles.TryGetValue(Repository.Path, out var excluded) || !excluded.Contains(path));
+
+    private void InclusionChanged(FileItem item)
+    {
+        if (Repository is null || item.File.IsHistory) return;
+        if (!_excludedFiles.TryGetValue(Repository.Path, out var excluded))
+            _excludedFiles[Repository.Path] = excluded = new HashSet<string>(StringComparer.Ordinal);
+        if (item.IsIncluded) excluded.Remove(item.Path); else excluded.Add(item.Path);
+        RaiseInclusionProperties();
+    }
+
+    public void SetAllChangesIncluded(bool include)
+    {
+        if (Repository is null || IsBusy) return;
+        _excludedFiles[Repository.Path] = include ? new HashSet<string>(StringComparer.Ordinal)
+            : _workingFiles.Select(file => file.Path).ToHashSet(StringComparer.Ordinal);
+        foreach (var item in WorkingFiles) item.IsIncluded = include;
+        RaiseInclusionProperties();
+    }
+
+    private void ReconcileInclusions()
+    {
+        if (Repository is null || !_excludedFiles.TryGetValue(Repository.Path, out var excluded)) return;
+        foreach (var file in _workingFiles)
+            if (file.OldPath is not null && excluded.Contains(file.OldPath)) excluded.Add(file.Path);
+        excluded.IntersectWith(_workingFiles.Select(file => file.Path));
+    }
+
+    private void RaiseInclusionProperties()
+    {
+        foreach (var name in new[] { nameof(IncludedCount), nameof(AllChangesIncluded), nameof(CommitButtonLabel) }) Raise(name);
+        CommandManager.InvalidateRequerySuggested();
+    }
     public Task SwitchBranchAsync(BranchInfo branch) => MutateAsync("正在切换分支…", ct =>
     {
         var localName = branch.IsRemote && branch.Name.Contains('/') ? branch.Name[(branch.Name.IndexOf('/') + 1)..] : branch.Name;
@@ -402,13 +651,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private Task FetchAsync() => MutateAsync("正在获取远程更新…", async ct =>
     {
         await _git.FetchAsync(Repository!.Path, ct);
-        LastFetched = $"上次获取 {DateTime.Now:HH:mm}";
+        MarkFetched();
     }, "已获取远程更新");
-    private Task PullAsync() => MutateAsync("正在拉取更新（仅快进）…", ct => _git.PullAsync(Repository!.Path, ct), "已拉取远程更新");
+    private Task PullAsync() => MutateAsync("正在拉取更新（仅快进）…", async ct =>
+    {
+        await _git.PullAsync(Repository!.Path, ct);
+        MarkFetched();
+    }, "已拉取远程更新");
+    private void MarkFetched()
+    {
+        if (Repository is null) return;
+        LastFetched = $"上次获取 {DateTime.Now:HH:mm}";
+        _fetchTimes[Repository.Path] = LastFetched;
+    }
     private Task PushAsync() => MutateAsync("正在推送提交…", ct => _git.PushAsync(Repository!.Path, ct), "已推送到远程仓库");
+    private Task ExecuteSyncAsync() => SyncState.Action switch
+    {
+        SyncAction.Pull => PullAsync(),
+        SyncAction.Push or SyncAction.Publish => PushAsync(),
+        _ => FetchAsync()
+    };
     private Task CommitAsync() => MutateAsync("正在创建提交…", async ct =>
     {
-        await _git.CommitAsync(Repository!.Path, Summary.Trim(), Description.Trim(), ct);
+        var selected = _workingFiles.Where(file => IsFileIncluded(file.Path)).ToArray();
+        await _git.CommitSelectedAsync(Repository!.Path, selected, Summary.Trim(), Description.Trim(), ct);
         Summary = "";
         Description = "";
     }, "提交已创建");
@@ -435,11 +701,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async Task RunOperationAsync(string message, Func<CancellationToken, Task> action, bool silent = false)
     {
-        if (_disposed || !await _operationLock.WaitAsync(0)) return;
+        if (_disposed) return;
+        // Passive refresh may be skipped; explicit user operations must wait instead of disappearing.
+        if (silent)
+        {
+            if (!await _operationLock.WaitAsync(0)) return;
+        }
+        else await _operationLock.WaitAsync();
+        if (_disposed) { _operationLock.Release(); return; }
         using var cancellation = new CancellationTokenSource();
         _operationCancellation = cancellation;
-        IsBusy = true;
-        BusyMessage = message;
+        if (!silent) { IsBusy = true; BusyMessage = message; }
         if (!silent) Error = "";
         try { await action(cancellation.Token); }
         catch (OperationCanceledException) { Notice = "操作已取消"; }
@@ -447,20 +719,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally
         {
             _operationCancellation = null;
-            IsBusy = false;
-            BusyMessage = "";
+            if (!silent) { IsBusy = false; BusyMessage = ""; }
             _operationLock.Release();
         }
     }
 
     private void RaiseDetailProperties()
     {
-        foreach (var name in new[] { nameof(HasCommit), nameof(DetailSubject), nameof(DetailBody), nameof(DetailAuthor), nameof(DetailEmail), nameof(DetailDate), nameof(DetailSha), nameof(DetailShortSha), nameof(DetailInitials), nameof(ParentDescription), nameof(FileCount) }) Raise(name);
+        foreach (var name in new[] { nameof(HasCommit), nameof(DetailSubject), nameof(DetailBody), nameof(DetailAuthor), nameof(DetailDate), nameof(DetailSha), nameof(DetailShortSha), nameof(DetailInitials), nameof(ParentDescription), nameof(FileCount) }) Raise(name);
     }
 
     private void SaveSettings()
     {
-        if (_persistSettings) _store.Save(new AppSettings(RecentRepositories.ToList(), Repository?.Path ?? LastRepository, AllBranches));
+        if (!_persistSettings) return;
+        var error = _store.Save(new AppSettings(Repositories.Select(entry => entry.Path).ToList(), LastRepository, AllBranches, Repositories.ToList()));
+        if (error is not null) Error = $"无法保存仓库列表：{error}";
+    }
+
+    private void RaiseSyncProperties()
+    {
+        foreach (var name in new[] { nameof(SyncState), nameof(SyncTitle), nameof(SyncGlyph), nameof(SyncBadge), nameof(HasSyncBadge), nameof(SyncSubtitle), nameof(SyncToolTip) }) Raise(name);
     }
 
     private void StartWatcher(string path)
@@ -499,5 +777,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _operationCancellation?.Cancel();
         _selectionCancellation?.Cancel();
         _diffCancellation?.Cancel();
+        _pathFilterCancellation?.Cancel();
+        _repositoryCancellation.Cancel();
     }
 }

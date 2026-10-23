@@ -9,12 +9,16 @@ public sealed record CommitInfo(string Id, IReadOnlyList<string> Parents, string
 }
 
 public sealed record RepositoryInfo(string Path, string Branch, string? Upstream, int Ahead, int Behind,
-    bool HasHead, bool HasRemote)
+    bool HasHead, bool HasRemote, string? RemoteName = null, bool IsDetached = false)
 {
     public string Name => System.IO.Path.GetFileName(Path.TrimEnd(System.IO.Path.DirectorySeparatorChar));
 }
 
 public sealed record BranchInfo(string Name, bool IsCurrent, bool IsRemote);
+
+public sealed record CommitStats(int FileCount, int Additions, int Deletions, int BinaryFileCount);
+
+public sealed record HistoryPage(IReadOnlyList<CommitInfo> Commits, GraphLayoutResult Graph, bool HasMore);
 
 public sealed record ChangedFile(string Path, string? OldPath, char IndexStatus, char WorkTreeStatus,
     bool IsHistory = false)
