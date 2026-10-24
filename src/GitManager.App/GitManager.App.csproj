@@ -11,6 +11,7 @@
     <ProjectReference Include="../GitManager.Core/GitManager.Core.csproj" />
     <ProjectReference Include="../GitManager.Services/GitManager.Services.csproj" />
     <ProjectReference Include="../GitManager.Agent/GitManager.Agent.csproj" />
+    <PackageReference Include="Markdig" Version="1.5.0" />
     <Resource Include="Assets/AppIcon.ico" />
   </ItemGroup>
 </Project>

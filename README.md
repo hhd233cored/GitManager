@@ -31,6 +31,7 @@
 - 修改历史或覆盖版本前保留恢复点；变基、合并和撤销前自动保存未提交改动，完成或中止后恢复。Stash 与恢复点独立于普通历史图显示。
 - 后台 Git 操作、取消操作、外部文件变更自动刷新、错误信息展示。
 - 可收起的 Git 助手侧栏：生成勾选文件的提交说明草稿、解释提交或 Diff、Fetch 后分析同步差异，支持流式回答和停止。
+- 助手聊天支持 Markdown 标题、强调、列表、代码、引用、表格和网页链接，支持选择复制及流式更新；顶部仓库/模型提示、快捷按钮和底部状态提示已移除。
 - 助手支持自定义 OpenAI 兼容服务和模型、本机模型，以及关闭 Diff 内容共享；密钥按服务地址分别存入 Windows 凭据管理器。
 - 本机 stdio MCP 服务只开放当前选中的仓库。外部客户端可读取状态、历史、Diff，或提出操作计划；实际写操作需在界面审阅并执行。
 
@@ -76,7 +77,9 @@ Changes 上方的 Stash 与恢复按钮，或 Repository 菜单，可以打开 S
 
 点击右上角“助手”，在“设置”中填写 API 基础地址、模型名称和 API Key。模型需支持 Chat Completions 工具调用；本机地址可使用 HTTP，其余地址使用 HTTPS。连接测试会发送一次简短请求。
 
-“提交说明”根据勾选文件生成草稿，查看后点击“填入提交区”，仍由用户编辑和提交。“解释提交”“解释 Diff”使用当前选择。“同步分析”会先 Fetch，不会自动 Pull/Push。切换仓库或分支会停止旧分析并清除上下文；草稿填入前重新核对文件内容和勾选范围。
+在聊天中要求生成提交说明、解释当前提交或 Diff、分析同步差异。提交草稿查看后点击“填入提交区”，仍由用户编辑和提交；历史右键也可要求解释提交。获取远程最新信息会先 Fetch，不会自动 Pull/Push。切换仓库或分支会停止旧分析并清除上下文；草稿填入前重新核对文件内容和勾选范围。
+
+同步按钮下方显示实际的上次 Fetch 时间，例如 `Last fetched 27 minutes ago`，从仓库的 `FETCH_HEAD` 读取并定时更新，也支持 worktree。打开仓库仍先显示 Fetch，保留获取后再决定 Pull/Push 的流程。
 
 MCP 默认关闭，在助手设置中启用后，复制窗口中的配置，或使用发布目录的 `mcp-config.json`。GitManager 需保持运行；MCP 服务无需模型密钥，外部客户端使用自己的模型。UI、助手和 MCP 共用仓库操作队列，实际 Git 操作复用已有恢复点及冲突处理。
 
@@ -89,6 +92,7 @@ MCP 默认关闭，在助手设置中启用后，复制窗口中的配置，或�
 ```powershell
 dotnet run --project tests/GitManager.AgentChecks
 dotnet run --project tests/GitManager.UiChecks -- artifacts/preview-repository artifacts/assistant-screenshots --assistant-only
+dotnet run --project tests/GitManager.UiChecks -- artifacts/preview-repository artifacts/chat-presentation-screenshots --chat-ui-only
 ```
 
 Git 集成检查会创建独立测试仓库与本地 bare 远程，覆盖图连接、分页连续性、较新支线居右、支线汇合后的颜色、根提交、合并、增删统计（含重命名与二进制文件）、批量路径历史匹配、资源管理器文件范围、中文与特殊路径、重命名、暂存、混合状态、勾选文件提交、未选文件暂存保留、大批量路径、克隆、分支发布及快进拉取。新增操作检查覆盖 Stash 部分文件与新增文件、稳定 ID、暂存恢复、三种 Reset、恢复点、变基/合并/Stash 冲突的继续与中止、重启检测、合并 Revert 主线及本地/远程版本覆盖和过期租约拒绝。

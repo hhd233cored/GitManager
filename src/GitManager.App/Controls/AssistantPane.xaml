@@ -1,10 +1,11 @@
 <UserControl x:Class="GitManager.App.Controls.AssistantPane"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:GitManager.App.Controls">
     <Border Background="#FAFBFC" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1,0,0,0">
         <Grid>
             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-            <StackPanel Margin="12,10,12,0">
+            <StackPanel Margin="12,10,12,8">
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                         <Button Content="设置" Command="{Binding SettingsCommand}" FontSize="10.5" Padding="6,2" Margin="0,0,5,0" />
@@ -12,14 +13,6 @@
                     </StackPanel>
                     <TextBlock Text="Git 助手" FontWeight="SemiBold" FontSize="13" />
                 </DockPanel>
-                <TextBlock Text="{Binding Scope}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Scope}" FontSize="10.5" Foreground="{StaticResource MutedBrush}" Margin="0,7,0,4" />
-                <TextBlock Text="{Binding ConnectionLabel}" FontSize="10" Foreground="#87939F" TextTrimming="CharacterEllipsis" />
-                <WrapPanel Margin="0,9,0,7">
-                    <Button Content="提交说明" Command="{Binding DraftCommand}" Padding="7,3" FontSize="10.5" Margin="0,0,5,5" />
-                    <Button Content="解释提交" Command="{Binding ExplainCommitCommand}" Padding="7,3" FontSize="10.5" Margin="0,0,5,5" />
-                    <Button Content="解释 Diff" Command="{Binding ExplainDiffCommand}" Padding="7,3" FontSize="10.5" Margin="0,0,5,5" />
-                    <Button Content="同步分析" Command="{Binding AnalyzeSyncCommand}" Padding="7,3" FontSize="10.5" Margin="0,0,5,5" />
-                </WrapPanel>
             </StackPanel>
             <ScrollViewer x:Name="ConversationScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="12,0,12,10">
                 <StackPanel>
@@ -27,7 +20,7 @@
                         <ItemsControl.ItemTemplate><DataTemplate>
                             <StackPanel Margin="0,7,0,12">
                                 <TextBlock Text="{Binding Label}" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,5" />
-                                <TextBox Text="{Binding Text, Mode=OneWay}" IsReadOnly="True" IsTabStop="False" TextWrapping="Wrap" AcceptsReturn="True" BorderThickness="0" Background="Transparent" Padding="0" FontSize="11.5" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled" />
+                                <controls:MarkdownView Markdown="{Binding Text}" FontSize="11.5" />
                             </StackPanel>
                         </DataTemplate></ItemsControl.ItemTemplate>
                     </ItemsControl>
@@ -59,7 +52,6 @@
             </ScrollViewer>
             <StackPanel Grid.Row="2" Margin="12,5,12,10">
                 <TextBlock Text="{Binding Error}" TextWrapping="Wrap" Foreground="{StaticResource RedBrush}" FontSize="10.5" MaxHeight="90" Margin="0,0,0,5" />
-                <TextBlock Text="{Binding Step}" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,0,0,7" />
                 <TextBox x:Name="AssistantInput" Text="{Binding Input, UpdateSourceTrigger=PropertyChanged}" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="58" MaxHeight="120" VerticalScrollBarVisibility="Auto" PreviewKeyDown="Input_KeyDown" ToolTip="描述你的 Git 问题，Ctrl+Enter 发送" />
                 <DockPanel Margin="0,8,0,5">
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">

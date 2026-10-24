@@ -23,6 +23,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private CancellationTokenSource _repositoryCancellation = new();
     private FileSystemWatcher? _watcher;
     private readonly System.Windows.Threading.DispatcherTimer _refreshTimer;
+    private readonly System.Windows.Threading.DispatcherTimer _fetchTimeTimer;
     private bool _disposed;
     private RepositoryInfo? _repository;
     private bool _isBusy;
@@ -36,7 +37,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private string _fileSearch = "";
     private string _summary = "";
     private string _description = "";
-    private string _lastFetched = "";
+    private DateTimeOffset? _lastFetchedAt;
     private string? _fetchedSyncContext;
     private int _historyLimit = 300;
     private bool _canLoadMore;
@@ -52,7 +53,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly Dictionary<string, string> _historyFileSelections = [];
     private readonly Dictionary<string, CommitDetails> _commitDetails = new(StringComparer.Ordinal);
     private string? _workingSelectionPath;
-    private readonly Dictionary<string, string> _fetchTimes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _fetchTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, HashSet<string>> _excludedFiles = new(StringComparer.OrdinalIgnoreCase);
 
     public MainViewModel(bool persistSettings = true, SettingsStore? settingsStore = null)
@@ -92,6 +93,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (IsBusy) { _refreshTimer.Start(); return; }
             if (HasRepository) await RefreshAsync(silent: true);
         };
+        _fetchTimeTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _fetchTimeTimer.Tick += (_, _) => { Raise(nameof(LastFetched)); RaiseSyncProperties(); };
+        _fetchTimeTimer.Start();
     }
 
     public event Action<string>? OperationCompleted;
@@ -143,11 +147,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public bool HasSyncBadge => SyncBadge.Length > 0;
     public string SyncSubtitle => Repository is null ? "选择仓库以同步"
         : !Repository.HasRemote ? "尚未配置远程仓库"
-        : Repository.IsDetached ? "分离的 HEAD · 可获取远程更新"
-        : Repository.Upstream is not null && !HasFetchedCurrentContext ? "先获取最新远程状态"
-        : Repository.Ahead > 0 && Repository.Behind > 0 ? "分支已分叉 · 需先合并或变基"
-        : SyncState.Action == SyncAction.Publish ? "将当前分支发布到远程"
-        : LastFetched.Length > 0 ? LastFetched : "尚未获取远程更新";
+        : LastFetched;
     public string SyncToolTip => !SyncState.IsEnabled ? SyncSubtitle : SyncState.Action switch
     {
         SyncAction.Resolve => "两边都有独有提交，选择合并、变基或采用某一端的版本。",
@@ -157,7 +157,22 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _ => $"从 {SyncState.RemoteName} 获取最新状态，随后按提交差异显示 Pull 或 Push。"
     };
     public bool CanManageRepositories => !IsBusy;
-    public string LastFetched { get => _lastFetched; private set { Set(ref _lastFetched, value); RaiseSyncProperties(); } }
+    public string LastFetched => FormatFetchTime(_lastFetchedAt, DateTimeOffset.UtcNow);
+    internal static string FormatFetchTime(DateTimeOffset? fetched, DateTimeOffset now)
+    {
+        if (fetched is null) return "Last fetched never";
+        var elapsed = now - fetched.Value;
+        if (elapsed.TotalMinutes < 1) return "Last fetched just now";
+        var count = elapsed.TotalHours < 1 ? (int)elapsed.TotalMinutes : elapsed.TotalDays < 1 ? (int)elapsed.TotalHours : (int)elapsed.TotalDays;
+        var unit = elapsed.TotalHours < 1 ? "minute" : elapsed.TotalDays < 1 ? "hour" : "day";
+        return $"Last fetched {count} {unit}{(count == 1 ? "" : "s")} ago";
+    }
+    private void SetLastFetchTime(DateTimeOffset? fetched)
+    {
+        _lastFetchedAt = fetched;
+        Raise(nameof(LastFetched));
+        RaiseSyncProperties();
+    }
     public bool IsBusy
     {
         get => _isBusy;
@@ -343,7 +358,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         RegisterRepository(repository.Path);
         Repository = repository;
         LastRepository = repository.Path;
-        LastFetched = _fetchTimes.GetValueOrDefault(repository.Path, "");
+        SetLastFetchTime(_fetchTimes.TryGetValue(repository.Path, out var fetched) ? fetched : null);
         SaveSettings();
         try { await RefreshDataAsync(ct); }
         finally { StartWatcher(repository.Path); }
@@ -390,7 +405,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         FileSearch = "";
         Summary = "";
         Description = "";
-        LastFetched = "";
+        SetLastFetchTime(null);
         Diff = null;
         CanLoadMore = false;
         IsLoadingDetails = IsLoadingDiff = false;
@@ -479,8 +494,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var stashesTask = _git.GetStashesAsync(path, ct);
         var recoveryTask = _git.GetRecoveryPointsAsync(path, ct);
         var operationTask = _git.GetOperationAsync(path, ct);
-        await Task.WhenAll(infoTask, historyTask, filesTask, branchesTask, treeTask, stashesTask, recoveryTask, operationTask);
+        var fetchTimeTask = _git.GetLastFetchTimeAsync(path, ct);
+        await Task.WhenAll(infoTask, historyTask, filesTask, branchesTask, treeTask, stashesTask, recoveryTask, operationTask, fetchTimeTask);
         Repository = await infoTask;
+        var lastFetch = await fetchTimeTask;
+        if (lastFetch is not null) _fetchTimes[path] = lastFetch.Value;
+        SetLastFetchTime(lastFetch ?? (_fetchTimes.TryGetValue(path, out var cachedFetch) ? cachedFetch : null));
         var history = await historyTask;
         CanLoadMore = history.HasMore;
         var shown = history.Commits;
@@ -704,8 +723,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (Repository is null) return;
         _fetchedSyncContext = CurrentSyncContext;
-        LastFetched = $"上次获取 {DateTime.Now:HH:mm}";
-        _fetchTimes[Repository.Path] = LastFetched;
+        var fetched = DateTimeOffset.UtcNow;
+        _fetchTimes[Repository.Path] = fetched;
+        SetLastFetchTime(fetched);
     }
     private Task PushAsync() => MutateAsync("正在推送提交…", ct => _git.PushAsync(Repository!.Path, ct), "已推送到远程仓库");
     private Task ExecuteSyncAsync() => SyncState.Action switch
@@ -812,6 +832,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _disposed = true;
+        _fetchTimeTimer.Stop();
         SaveSettings();
         _refreshTimer.Stop();
         _watcher?.Dispose();

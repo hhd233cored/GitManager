@@ -42,6 +42,12 @@ internal static class Program
                 Assert(vm.Error.Length == 0, vm.Error);
                 Assert(vm.SelectedCommit is not null && vm.Files.Count > 0 && vm.Commits.Count >= 12, "History did not load real Git data.");
                 await ChangesAndMenuChecks.CheckMenusAsync(window, output);
+                if (args.Contains("--chat-ui-only", StringComparer.Ordinal))
+                {
+                    await ChatPresentationChecks.RunAsync(window, output, Render);
+                    Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
+                    return;
+                }
                 if (args.Contains("--assistant-only", StringComparer.Ordinal))
                 {
                     await AssistantChecks.RunAsync(window, output, Render);
