@@ -9,6 +9,8 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../GitManager.Core/GitManager.Core.csproj" />
+    <ProjectReference Include="../GitManager.Services/GitManager.Services.csproj" />
+    <ProjectReference Include="../GitManager.Agent/GitManager.Agent.csproj" />
     <Resource Include="Assets/AppIcon.ico" />
   </ItemGroup>
 </Project>

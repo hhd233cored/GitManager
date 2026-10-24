@@ -27,6 +27,7 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
     private double[] _rowOffsets = [0];
     private bool _layoutDirty = true;
     private double _asciiAdvance;
+    private double _firstBaseline;
     private Size _viewport;
     private Size _extent;
     private double _verticalOffset;
@@ -114,7 +115,12 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
         _visibleText.Clear();
         _rowOffsets = new double[Count + 1];
         if (Document is null) return;
-        if (_asciiAdvance == 0) _asciiAdvance = Math.Max(Format("M", TextColor).WidthIncludingTrailingWhitespace, Format("W", TextColor).WidthIncludingTrailingWhitespace);
+        if (_asciiAdvance == 0)
+        {
+            var probe = FormatWrapped("M", CodeWidth, false, false);
+            _asciiAdvance = Math.Max(probe.WidthIncludingTrailingWhitespace, Format("W", TextColor).WidthIncludingTrailingWhitespace);
+            _firstBaseline = probe.Baseline;
+        }
         var heights = new Dictionary<(string Text, bool Header), double>();
         double Height(DiffLine? line, bool header = false)
         {
@@ -125,7 +131,8 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
             // ASCII code that fits the fixed-pitch font needs no paragraph layout.
             var fits = !header && !line.Text.Contains('\t') && line.Text.Length * _asciiAdvance <= width - 1
                 && line.Text.All(character => character is >= ' ' and <= '~');
-            var height = fits ? RowHeight : Math.Max(RowHeight, FormatWrapped(line.Text, width, header, false).Height);
+            var height = fits ? RowHeight : Math.Max(RowHeight,
+                Math.Ceiling((FormatWrapped(line.Text, width, header, false).Height - .01) / RowHeight) * RowHeight);
             heights[key] = height;
             return height;
         }
@@ -210,28 +217,31 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
     private void DrawPane(DrawingContext dc, DiffLine? line, int index, double x, double width, double y, double height, bool left)
     {
         var rect = new Rect(x, y, Math.Max(0, width), height);
+        dc.PushClip(new RectangleGeometry(rect));
         var background = line is null ? EmptyColor : line.Kind == DiffKind.Addition ? Added : line.Kind == DiffKind.Deletion ? Removed : Brushes.White;
         dc.DrawRectangle(background, null, rect);
         var gutterBackground = line?.Kind == DiffKind.Addition ? AddedGutter : line?.Kind == DiffKind.Deletion ? RemovedGutter : EmptyColor;
         dc.DrawRectangle(gutterBackground, null, new Rect(x, y, Math.Min(Gutter, width), height));
-        if (line is null) return;
+        if (line is null) { dc.Pop(); return; }
         var code = VisibleText(index, left ? 0 : 1, line.Text);
         var number = left ? line.OldNumber : line.NewNumber;
         if (number.HasValue)
         {
             var formatted = Format(number.Value.ToString(CultureInfo.InvariantCulture), Muted, 11);
-            dc.DrawText(formatted, new Point(x + Gutter - formatted.Width - 8, y + code.Baseline - formatted.Baseline));
+            dc.DrawText(formatted, new Point(x + Gutter - formatted.Width - 8, y + _firstBaseline - formatted.Baseline));
         }
         var mark = line.Kind == DiffKind.Addition ? "+" : line.Kind == DiffKind.Deletion ? "−" : " ";
         var marker = Format(mark, Muted);
         dc.PushClip(new RectangleGeometry(new Rect(x + Gutter, y, Math.Max(0, width - Gutter), height)));
-        dc.DrawText(marker, new Point(x + Gutter + 7, y + code.Baseline - marker.Baseline));
+        dc.DrawText(marker, new Point(x + Gutter + 7, y + _firstBaseline - marker.Baseline));
         dc.DrawText(code, new Point(x + Gutter + TextInset, y));
+        dc.Pop();
         dc.Pop();
     }
     private void DrawUnified(DrawingContext dc, DiffLine line, int index, double y, double height)
     {
         if (line.Kind is DiffKind.Hunk or DiffKind.Information) { DrawHeader(dc, line, index, y, height); return; }
+        dc.PushClip(new RectangleGeometry(new Rect(0, y, _viewport.Width, height)));
         var background = line.Kind == DiffKind.Addition ? Added : line.Kind == DiffKind.Deletion ? Removed : Brushes.White;
         dc.DrawRectangle(background, null, new Rect(0, y, _viewport.Width, height));
         var gutter = line.Kind == DiffKind.Addition ? AddedGutter : line.Kind == DiffKind.Deletion ? RemovedGutter : EmptyColor;
@@ -240,15 +250,16 @@ public sealed class DiffView : FrameworkElement, IScrollInfo
         void DrawNumber(int number, double x)
         {
             var formatted = Format(number.ToString(CultureInfo.InvariantCulture), Muted, 11);
-            dc.DrawText(formatted, new Point(x, y + code.Baseline - formatted.Baseline));
+            dc.DrawText(formatted, new Point(x, y + _firstBaseline - formatted.Baseline));
         }
         if (line.OldNumber.HasValue) DrawNumber(line.OldNumber.Value, 10);
         if (line.NewNumber.HasValue) DrawNumber(line.NewNumber.Value, Gutter + 10);
         var mark = line.Kind == DiffKind.Addition ? "+" : line.Kind == DiffKind.Deletion ? "−" : " ";
         var marker = Format(mark, Muted);
         dc.PushClip(new RectangleGeometry(new Rect(Gutter * 2, y, Math.Max(0, _viewport.Width - Gutter * 2), height)));
-        dc.DrawText(marker, new Point(Gutter * 2 + 7, y + code.Baseline - marker.Baseline));
+        dc.DrawText(marker, new Point(Gutter * 2 + 7, y + _firstBaseline - marker.Baseline));
         dc.DrawText(code, new Point(Gutter * 2 + TextInset, y));
+        dc.Pop();
         dc.Pop();
     }
     private FormattedText FormatWrapped(string text, double width, bool header, bool syntax)

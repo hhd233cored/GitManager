@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
 using GitManager.App.Dialogs;
@@ -21,8 +22,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         ViewModel = new MainViewModel(persistSettings, settingsStore);
+        InitializeAssistant(persistSettings);
         DataContext = ViewModel;
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+        ViewModel.SyncResolutionRequested += async () => await OperationUi.SynchronizeAsync(this, ViewModel);
         Loaded += async (_, _) =>
         {
             var path = repositoryPath ?? ViewModel.LastRepository;
@@ -32,7 +35,7 @@ public partial class MainWindow : Window
         {
             if (ViewModel.HasRepository && !ViewModel.IsBusy) await ViewModel.RefreshAsync(silent: true);
         };
-        Closing += (_, _) => ViewModel.Dispose();
+        Closing += (_, _) => { Assistant.Dispose(); ViewModel.Dispose(); };
     }
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -54,7 +57,8 @@ public partial class MainWindow : Window
     }
     private void RepositorySelector_Click(object sender, RoutedEventArgs e)
     {
-        var menu = new ContextMenu { PlacementTarget = (Button)sender, MinWidth = 330, MaxHeight = 560 };
+        var button = (Button)sender;
+        var menu = new ContextMenu { MinWidth = 330, MaxHeight = 560 };
         var open = new MenuItem { Header = "添加本地仓库…", InputGestureText = "Ctrl+O" };
         open.Click += OpenRepository_Click;
         menu.Items.Add(open);
@@ -71,6 +75,20 @@ public partial class MainWindow : Window
             item.Click += async (_, _) => await ViewModel.OpenRepositoryAsync(entry.Path);
             menu.Items.Add(item);
         }
+        OpenMenuBelow(button, menu);
+    }
+    private static void OpenMenuBelow(FrameworkElement target, ContextMenu menu, Rect? rectangle = null)
+    {
+        var anchor = rectangle ?? new Rect(target.RenderSize);
+        // ContextMenuService resets the menu's own Placement for mouse/keyboard opens.
+        // Owner-side properties take precedence and keep every opening anchored to the control.
+        ContextMenuService.SetPlacement(target, PlacementMode.Bottom);
+        ContextMenuService.SetPlacementTarget(target, target);
+        ContextMenuService.SetPlacementRectangle(target, anchor);
+        menu.PlacementTarget = target;
+        menu.Placement = PlacementMode.Bottom;
+        menu.PlacementRectangle = anchor;
+        target.ContextMenu = menu;
         menu.IsOpen = true;
     }
     private static StackPanel RepositoryMenuHeader(RepositoryEntry entry)
@@ -81,34 +99,25 @@ public partial class MainWindow : Window
         return panel;
     }
     private void ManageRepositories_Click(object sender, RoutedEventArgs e) => new RepositoryManagerWindow(this, ViewModel).ShowDialog();
-    private void SyncMenu_Click(object sender, RoutedEventArgs e)
-    {
-        var button = (Button)sender;
-        var remote = ViewModel.SyncState.RemoteName;
-        var menu = new ContextMenu { PlacementTarget = button, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom, MinWidth = 225 };
-        menu.Items.Add(new MenuItem { Header = $"Fetch {remote}", Command = ViewModel.FetchCommand, ToolTip = "获取远程更新，不修改工作区" });
-        menu.Items.Add(new MenuItem { Header = $"Pull {remote}", Command = ViewModel.PullCommand, ToolTip = "拉取远程更新，仅允许快进" });
-        menu.Items.Add(new MenuItem { Header = ViewModel.Repository?.Upstream is null ? "Publish branch" : $"Push {remote}", Command = ViewModel.PushCommand, ToolTip = "推送或发布当前分支" });
-        button.ContextMenu = menu;
-        menu.IsOpen = true;
-    }
     private void BranchSelector_Click(object sender, RoutedEventArgs e)
     {
         var button = (Button)sender;
-        var menu = new ContextMenu { PlacementTarget = button, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom, MinWidth = 270, MaxHeight = 500 };
-        var create = new MenuItem { Header = "+  新建分支…" };
+        var menu = new ContextMenu { MinWidth = 270, MaxHeight = 500 };
+        var create = new MenuItem { Header = "+  新建分支…", IsEnabled = ViewModel.CanStartOperation };
         create.Click += NewBranch_Click;
         menu.Items.Add(create);
+        var rebase = new MenuItem { Header = "将当前分支变基到…", IsEnabled = ViewModel.CanStartOperation && ViewModel.Repository?.HasHead == true };
+        rebase.Click += Rebase_Click;
+        menu.Items.Add(rebase);
         menu.Items.Add(new Separator());
         foreach (var branch in ViewModel.Branches)
         {
-            var item = new MenuItem { Header = branch.Name, IsChecked = branch.IsCurrent, IsCheckable = true, IsEnabled = !branch.IsCurrent,
+            var item = new MenuItem { Header = branch.Name, IsChecked = branch.IsCurrent, IsCheckable = true, IsEnabled = !branch.IsCurrent && ViewModel.CanStartOperation,
                 Tag = branch, ToolTip = branch.IsRemote ? "切换到对应的本地跟踪分支" : "切换到本地分支" };
             item.Click += async (_, _) => { if (!branch.IsCurrent) await ViewModel.SwitchBranchAsync(branch); };
             menu.Items.Add(item);
         }
-        button.ContextMenu = menu;
-        menu.IsOpen = true;
+        OpenMenuBelow(button, menu);
     }
     private async void RepositoryTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
@@ -116,7 +125,7 @@ public partial class MainWindow : Window
     }
     private async void NewBranch_Click(object sender, RoutedEventArgs e)
     {
-        if (ViewModel.IsBusy || !ViewModel.HasRepository) return;
+        if (!ViewModel.CanStartOperation) return;
         var prompt = new TextPromptWindow(this, "新建分支", "从当前 HEAD 创建并切换到新分支。");
         if (prompt.ShowDialog() == true) await ViewModel.CreateBranchAsync(prompt.Value);
     }
@@ -165,8 +174,6 @@ public partial class MainWindow : Window
     {
         if (sender is ToolTip { DataContext: CommitItem item }) await ViewModel.EnsureCommitStatsAsync(item);
     }
-    private void SplitDiff_Click(object sender, RoutedEventArgs e) => ViewModel.IsSplitDiff = true;
-    private void UnifiedDiff_Click(object sender, RoutedEventArgs e) => ViewModel.IsSplitDiff = false;
     private void ChangesList_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Space || Keyboard.Modifiers != ModifierKeys.None || Keyboard.FocusedElement is CheckBox || ViewModel.IsBusy) return;
@@ -199,6 +206,7 @@ public partial class MainWindow : Window
     }
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (AssistantPanel.IsKeyboardFocusWithin && AssistantPanel.HandleShortcut(e.Key, Keyboard.Modifiers)) { e.Handled = true; return; }
         var control = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
         if (control && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) && e.Key == Key.O) { ManageRepositories_Click(this, e); e.Handled = true; }
         else if (control && e.Key == Key.O) { OpenRepository_Click(this, e); e.Handled = true; }
@@ -215,7 +223,7 @@ public partial class MainWindow : Window
             await ViewModel.AddRepositoriesAsync(paths.Where(Directory.Exists));
     }
     private void Help_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this,
-        "Ctrl+O：添加本地仓库（可多选）\nCtrl+Shift+O：管理仓库列表\nCtrl+1 / Ctrl+2：聚焦 Changes / History\nCtrl+Enter：提交勾选文件\nSpace：切换当前文件的勾选\nF5：刷新\nEsc：取消正在执行的操作\n\n顶部同步按钮按状态显示 Fetch、Pull、Push 或 Publish，右侧下拉菜单可手动选择操作。\n仓库列表支持重命名、排序、更改位置与移除。移除会保留本地文件。\n当前分支菜单可切换本地分支，或从远程分支创建跟踪分支。\n三栏常驻：左侧 Changes，中间 History，右侧统一 Diff。点击历史提交旁的箭头可展开或收起文件，支持同时展开多个提交。点击工作区或历史文件可在右侧预览。\n悬停提交查看增删行数与完整信息；作者仅显示用户名。\n左下方资源管理器：选择文件或目录筛选历史，隐藏无关节点和文字，保留行占位与轨道线；目录包含子目录。点击“全部历史”或筛选条 × 可恢复。\n搜索框 Enter 定位下一个可见匹配项。\n拖动面板间分隔条可左右或上下调整尺寸；聚焦分隔条后可用方向键微调。\nChanges 默认勾选全部文件；总勾选框的半选状态表示仅选择了部分文件。\n勾选表示提交该文件的全部变更，刷新会保留选择。未勾选文件的修改与暂存内容会保留。\nPull 仅允许快进；分叉时保留现状并显示 Git 错误。",
+        "Ctrl+O：添加本地仓库（可多选）\nCtrl+Shift+O：管理仓库列表\nCtrl+1 / Ctrl+2：聚焦 Changes / History\nCtrl+Enter：提交勾选文件\nSpace：切换当前文件的勾选\nF5：刷新\nEsc：取消正在执行的操作\n\n顶部同步按钮按状态显示 Fetch、Pull、Push 或 Publish，手动操作和同步策略可在仓库菜单中选择。\n仓库列表支持重命名、排序、更改位置与移除。移除会保留本地文件。\n当前分支菜单可切换本地分支，或从远程分支创建跟踪分支。\n三栏常驻：左侧 Changes，中间 History，右侧统一 Diff。点击历史提交旁的箭头可展开或收起文件，支持同时展开多个提交。点击工作区或历史文件可在右侧预览。\n悬停提交查看增删行数与完整信息；作者仅显示用户名。\n左下方资源管理器：选择文件或目录筛选历史，隐藏无关节点和文字，保留行占位与轨道线；目录包含子目录。点击“全部历史”或筛选条 × 可恢复。\n搜索框 Enter 定位下一个可见匹配项。\n拖动面板间分隔条可左右或上下调整尺寸；聚焦分隔条后可用方向键微调。\nChanges 默认勾选全部文件；总勾选框的半选状态表示仅选择了部分文件。\n勾选表示提交该文件的全部变更，刷新会保留选择。未勾选文件的修改与暂存内容会保留。\nPull 仅允许快进；分叉时保留现状并显示 Git 错误。",
         "GitManager 使用说明", MessageBoxButton.OK, MessageBoxImage.Information);
     private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this,
         "GitManager\n\nWPF + .NET 10\n本地 Git 管理器 · 提交历史与分支图\n\n需要已安装并配置好的 Git。", "关于 GitManager", MessageBoxButton.OK, MessageBoxImage.Information);

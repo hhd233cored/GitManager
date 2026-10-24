@@ -94,13 +94,10 @@ internal static class RepositoryChecks
         Assert(vm.SyncState.Action == SyncAction.Fetch && vm.SyncTitle == "Fetch origin", "Initial sync action must be Fetch origin.");
         var syncButton = (Button)window.FindName("SyncButton");
         Assert(ReferenceEquals(syncButton.Command, vm.SyncCommand), "The toolbar button is not bound to unified sync.");
-        var menuButton = (Button)window.FindName("SyncMenuButton");
-        menuButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-        var menu = menuButton.ContextMenu;
-        Assert(menu is not null && menu.Items.OfType<MenuItem>().Count() == 3, "The sync dropdown must contain Fetch, Pull and Push.");
-        Assert(menu!.Items.OfType<MenuItem>().Any(item => ReferenceEquals(item.Command, vm.PullCommand))
-            && menu.Items.OfType<MenuItem>().Any(item => ReferenceEquals(item.Command, vm.PushCommand)), "Pull/Push are missing from the sync dropdown.");
-        menu.IsOpen = false;
+        Assert(window.FindName("SyncMenuButton") is null, "The sync dropdown arrow should be removed.");
+        var menu = (MenuItem)window.FindName("RepositoryActionsMenu");
+        Assert(menu.Items.OfType<MenuItem>().Any(item => ReferenceEquals(item.Command, vm.PullCommand))
+            && menu.Items.OfType<MenuItem>().Any(item => ReferenceEquals(item.Command, vm.PushCommand)), "Pull/Push are missing from the Repository menu.");
         await File.WriteAllTextAsync(Path.Combine(secondPath, "peer-update.txt"), "Update from the peer repository.\n");
         await git.StageAsync(secondPath);
         await git.CommitAsync(secondPath, "test: incoming change", "");
@@ -118,8 +115,18 @@ internal static class RepositoryChecks
         await git.CommitAsync(firstPath, "test: outgoing change", "");
         await vm.RefreshAsync();
         Assert(vm.SyncState.Action == SyncAction.Push && vm.SyncBadge == "1 ↑", "Local commits must select Push and show a count.");
+        var beforePush = (await runner.RunAsync(remote, ["rev-parse", "refs/heads/main"])).Output.Trim();
+        var localHead = await git.ResolveCommitAsync(firstPath, "HEAD");
+        await vm.OpenRepositoryAsync(firstPath);
+        Assert(vm.Repository!.Ahead == 1 && vm.SyncState.Action == SyncAction.Fetch && !vm.HasSyncBadge,
+            "Opening a repository with cached outgoing commits should first offer Fetch.");
+        await ExecuteSync(vm, () => vm.SyncState.Action == SyncAction.Push && vm.Repository!.Ahead == 1, "Fetch to Push");
+        Assert((await runner.RunAsync(remote, ["rev-parse", "refs/heads/main"])).Output.Trim() == beforePush,
+            "Fetch should update the action without automatically pushing the local commit.");
         await capture(window, Path.Combine(output, "sync-push.png"));
         await ExecuteSync(vm, () => vm.SyncState.Action == SyncAction.Fetch, "Push to Fetch");
+        Assert((await runner.RunAsync(remote, ["rev-parse", "refs/heads/main"])).Output.Trim() == localHead,
+            "The second click did not push the local commit.");
         await vm.CreateBranchAsync("feature/publish-ui");
         Assert(vm.SyncState.Action == SyncAction.Publish, "A branch without upstream must select Publish.");
         await ExecuteSync(vm, () => vm.Repository?.Upstream == "origin/feature/publish-ui", "Publish branch");
@@ -135,7 +142,7 @@ internal static class RepositoryChecks
         vm.SelectedFile = vm.Files.Single(file => file.Path.EndsWith("HistoryView.xaml", StringComparison.Ordinal));
         await Wait(() => !vm.IsLoadingDiff && vm.Diff is not null, "select preview file");
         await capture(window, Path.Combine(output, "history.png"));
-        Console.WriteLine("PASS unified sync dropdown and real Fetch → Pull → Fetch, Push → Fetch, Publish, and detached HEAD states.");
+        Console.WriteLine("PASS unified sync: fresh Fetch → Pull/Push → Fetch, cached-state revalidation, no automatic push, Publish and detached HEAD.");
 
         await vm.AddRepositoriesAsync([secondPath]);
         vm.RenameRepository(vm.Repositories.Single(entry => RepositoryEntry.SamePath(entry.Path, firstPath)), "GitManager · 工作副本 A");

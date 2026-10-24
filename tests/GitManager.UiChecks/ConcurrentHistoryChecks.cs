@@ -43,6 +43,7 @@ internal static class ConcurrentHistoryChecks
         Assert(firstRow.ActualHeight > CommitItem.RowHeight && rail.IsVisible && rail.ActualHeight >= 25, "Expanded files must extend the row and its graph rails.");
         var inlineFile = Descendants<Button>(firstRow).First(button => button.DataContext is FileItem);
         Assert(Descendants<FileStatusIcon>(inlineFile).Any(), "Inline files lost their + / minus / dot change indicators.");
+        await capture(window, Path.Combine(output, "history-header-selection.png"));
         inlineFile.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         await Wait(() => !vm.IsLoadingDiff && vm.Diff is not null, "select inline historical file");
         Assert(vm.IsHistory && ReferenceEquals(vm.Diff, diff.Document) && vm.SelectedFile == inlineFile.DataContext, "Inline history files did not reach the shared Diff viewer.");

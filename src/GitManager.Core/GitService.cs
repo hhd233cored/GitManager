@@ -3,7 +3,7 @@ using System.Text;
 
 namespace GitManager.Core;
 
-public sealed class GitService(GitRunner? runner = null)
+public sealed partial class GitService(GitRunner? runner = null)
 {
     private readonly GitRunner _runner = runner ?? new GitRunner();
 
@@ -39,7 +39,7 @@ public sealed class GitService(GitRunner? runner = null)
         var head = await _runner.RunAsync(path, ["rev-parse", "--verify", "HEAD"], ct, false);
         var args = new List<string> { "log", "--topo-order", $"--max-count={limit}", "--no-show-signature",
             "--decorate=short", "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%b%x00%D%x00" };
-        if (allBranches) args.Add("--all");
+        if (allBranches) args.AddRange(["--branches", "--remotes", "--tags"]);
         if (head.ExitCode == 0) args.Add("HEAD");
         else if (!allBranches) return [];
         var result = await _runner.RunAsync(path, args, ct, false);
@@ -73,7 +73,7 @@ public sealed class GitService(GitRunner? runner = null)
         var head = await _runner.RunAsync(path, ["rev-parse", "--verify", "HEAD"], ct, false);
         if (head.ExitCode != 0 && !allBranches) return new HistoryPage([], GraphLayout.Build([]), false);
         var args = new List<string> { "log", "--topo-order", "--no-show-signature", "--decorate=short", "--format=%H%x00%P%x00%aI%x00%D%x00" };
-        if (allBranches) args.Add("--all");
+        if (allBranches) args.AddRange(["--branches", "--remotes", "--tags"]);
         if (head.ExitCode == 0) args.Add("HEAD");
         var result = await _runner.RunAsync(path, args, ct, false);
         if (result.ExitCode != 0)
@@ -210,8 +210,9 @@ public sealed class GitService(GitRunner? runner = null)
         bool staged, CancellationToken ct = default, bool includeAllChanges = false)
     {
         var args = new List<string> { "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=4", "-M" };
+        if (file.IsConflicted && commit is null) args.Add("--ours");
         var fromEmpty = file.IsUntracked;
-        if (includeAllChanges && commit is null && !staged && !fromEmpty)
+        if (includeAllChanges && commit is null && !staged && !fromEmpty && !file.IsConflicted)
         {
             var head = await _runner.RunAsync(path, ["rev-parse", "--verify", "HEAD"], ct, false);
             if (head.ExitCode == 0) args.Add("HEAD");
@@ -290,6 +291,7 @@ public sealed class GitService(GitRunner? runner = null)
     public async Task CommitSelectedAsync(string path, IReadOnlyList<ChangedFile> files, string summary,
         string description, CancellationToken ct = default)
     {
+        await EnsureIdleAsync(path, ct);
         if (files.Count == 0) throw new GitException("请至少勾选一个要提交的文件。");
         var paths = files.SelectMany(file => file.OldPath is null ? new[] { file.Path } : new[] { file.OldPath, file.Path })
             .Distinct(StringComparer.Ordinal).ToArray();
@@ -341,10 +343,15 @@ public sealed class GitService(GitRunner? runner = null)
         var remoteName = remotes.Contains("origin") ? "origin" : remotes.FirstOrDefault() ?? throw new GitException("当前仓库没有配置远程地址。");
         await Run(path, ct, "push", "--set-upstream", remoteName, $"HEAD:refs/heads/{info.Branch}");
     }
-    public Task SwitchAsync(string path, string branch, CancellationToken ct = default, bool trackRemote = false) =>
-        trackRemote ? Run(path, ct, "switch", "--track", branch) : Run(path, ct, "switch", "--", branch);
+    public async Task SwitchAsync(string path, string branch, CancellationToken ct = default, bool trackRemote = false)
+    {
+        await EnsureIdleAsync(path, ct);
+        if (trackRemote) await Run(path, ct, "switch", "--track", branch);
+        else await Run(path, ct, "switch", "--", branch);
+    }
     public async Task CreateBranchAsync(string path, string name, CancellationToken ct = default)
     {
+        await EnsureIdleAsync(path, ct);
         await Run(path, ct, "check-ref-format", "--branch", name);
         await Run(path, ct, "switch", "-c", name);
     }

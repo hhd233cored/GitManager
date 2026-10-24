@@ -13,6 +13,8 @@ var runner = new GitRunner();
 var failures = new List<string>();
 var passed = 0;
 
+if (!args.Contains("--operations-only", StringComparer.Ordinal))
+{
 await Check("Selected commit excludes other staged files and preserves their index/worktree versions", async () =>
 {
     var path = await CloneForTest("selected commit");
@@ -77,12 +79,15 @@ await Check("Unified sync selects Fetch, Pull, Push or Publish from repository s
     var repository = new RepositoryInfo(fixture, "main", "origin/main", 0, 0, true, true, "origin");
     Equal(SyncAction.Fetch, RepositorySyncState.From(repository).Action);
     Equal("Fetch origin", RepositorySyncState.From(repository).Label);
+    Equal(SyncAction.Fetch, RepositorySyncState.From(repository with { Ahead = 3 }, hasFetchedRemote: false).Action);
+    Equal(SyncAction.Fetch, RepositorySyncState.From(repository with { Behind = 2 }, hasFetchedRemote: false).Action);
+    Equal(SyncAction.Fetch, RepositorySyncState.From(repository with { Ahead = 3, Behind = 2 }, hasFetchedRemote: false).Action);
     Equal(SyncAction.Pull, RepositorySyncState.From(repository with { Behind = 2 }).Action);
     Equal("2 ↓", RepositorySyncState.From(repository with { Behind = 2 }).Badge);
     Equal(SyncAction.Push, RepositorySyncState.From(repository with { Ahead = 3 }).Action);
     Equal("3 ↑", RepositorySyncState.From(repository with { Ahead = 3 }).Badge);
     Equal(SyncAction.Publish, RepositorySyncState.From(repository with { Upstream = null }).Action);
-    Equal(SyncAction.Pull, RepositorySyncState.From(repository with { Ahead = 1, Behind = 2 }).Action);
+    Equal(SyncAction.Resolve, RepositorySyncState.From(repository with { Ahead = 1, Behind = 2 }).Action);
     Equal("Pull upstream", RepositorySyncState.From(repository with { RemoteName = "upstream", Behind = 1 }).Label);
     Equal(SyncAction.Fetch, RepositorySyncState.From(repository with { HasHead = false, Upstream = null }).Action);
     Equal(SyncAction.Fetch, RepositorySyncState.From(repository with { IsDetached = true, Upstream = null }).Action);
@@ -424,6 +429,15 @@ await Check("Invalid repositories, invalid branches and cancellation are reporte
     cancellation.Cancel();
     await Throws<OperationCanceledException>(() => runner.RunAsync(fixture, ["status"], cancellation.Token));
 });
+
+}
+
+await Check("Stash selection, new files, Diff, index restore and stable IDs", () => RepositoryOperationsChecks.StashAsync(testRoot));
+await Check("Soft/mixed/hard reset and persistent recovery restore files/index/history", () => RepositoryOperationsChecks.ResetAndRecoveryAsync(testRoot));
+await Check("Rebase conflict detection, restart, abort and continue preserve dirty changes", () => RepositoryOperationsChecks.RebaseAsync(testRoot));
+await Check("Merge conflicts and mainline-aware Revert retain public history", () => RepositoryOperationsChecks.MergeAndRevertAsync(testRoot));
+await Check("Stash conflicts support abort and completion without deleting unrelated files", () => RepositoryOperationsChecks.StashConflictAsync(testRoot));
+await Check("Authoritative synchronization saves backups and rejects stale remote leases", () => RepositoryOperationsChecks.SynchronizationAsync(testRoot));
 
 var inspectArgument = Array.IndexOf(args, "--inspect-repository");
 if (inspectArgument >= 0 && inspectArgument + 1 < args.Length)

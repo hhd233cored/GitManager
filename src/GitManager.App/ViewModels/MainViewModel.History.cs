@@ -71,5 +71,6 @@ public sealed partial class MainViewModel
         _historyFileSelections[item.Commit.Id] = file.Path;
         SelectedCommit = item;
         SelectedFile = file;
+        file.IsSelected = true;
     }
 }

@@ -13,21 +13,25 @@
             <Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Style.Triggers><DataTrigger Binding="{Binding IsSelected}" Value="True"><Setter Property="Background" Value="#DBEAFE" /></DataTrigger></Style.Triggers>
         </Style>
+        <Style x:Key="CompactToolbarButton" TargetType="Button" BasedOn="{StaticResource ToolbarButton}">
+            <Setter Property="Padding" Value="8,5" />
+        </Style>
         <Style x:Key="CommitExpander" TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
             <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton"><Border x:Name="Chrome" Background="Transparent"><Path x:Name="Arrow" Data="M 0,0 L 3,3 L 0,6" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.2" HorizontalAlignment="Center" VerticalAlignment="Center" /></Border><ControlTemplate.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="Arrow" Property="Data" Value="M 0,0 L 3,3 L 6,0" /></Trigger><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Chrome" Property="Background" Value="#DAE7F4" /></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
         </Style>
     </Window.Resources>
     <Grid Background="White">
+        <Grid.ColumnDefinitions><ColumnDefinition x:Name="WorkspaceColumn" Width="*" /><ColumnDefinition x:Name="AssistantSplitterColumn" Width="0" /><ColumnDefinition x:Name="AssistantColumn" Width="0" /></Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
             <RowDefinition Height="30" />
-            <RowDefinition Height="68" />
+            <RowDefinition Height="51" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="29" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="#24292F" BorderBrush="#41474E" BorderThickness="0,0,0,1">
+        <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#24292F" BorderBrush="#41474E" BorderThickness="0,0,0,1">
             <DockPanel LastChildFill="True" Margin="12,0,0,0">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" WindowChrome.IsHitTestVisibleInChrome="True">
                     <Button Style="{StaticResource ToolbarButton}" Width="45" Padding="0" BorderThickness="0" Click="Minimize_Click" ToolTip="最小化" AutomationProperties.Name="最小化窗口">
@@ -62,18 +66,27 @@
                         <Separator />
                         <MenuItem Header="刷新仓库" InputGestureText="F5" Command="{Binding RefreshCommand}" />
                     </MenuItem>
-                    <MenuItem Header="仓库 (_R)" Foreground="#D0D7DE">
+                    <MenuItem x:Name="RepositoryActionsMenu" Header="仓库 (_R)" Foreground="#D0D7DE">
                         <MenuItem Header="管理仓库列表…" Click="ManageRepositories_Click" />
                         <MenuItem Header="在资源管理器中打开" Click="RevealRepository_Click" IsEnabled="{Binding HasRepository}" />
                         <Separator />
                         <MenuItem Header="Fetch" Command="{Binding FetchCommand}" />
                         <MenuItem Header="Pull（仅快进）" Command="{Binding PullCommand}" />
                         <MenuItem Header="Push / 发布分支" Command="{Binding PushCommand}" />
+                        <MenuItem Header="同步策略…" Click="Synchronize_Click" IsEnabled="{Binding CanStartOperation}" />
+                        <Separator />
+                        <MenuItem Header="保存到 Stash…" Click="SaveStash_Click" IsEnabled="{Binding CanStartOperation}" />
+                        <MenuItem Header="查看 Stash…" Click="Stashes_Click" IsEnabled="{Binding HasRepository}" />
+                        <MenuItem Header="备份与恢复…" Click="Recovery_Click" IsEnabled="{Binding HasRepository}" />
                     </MenuItem>
                     <MenuItem Header="分支 (_B)" Foreground="#D0D7DE">
                         <MenuItem Header="新建分支…" Click="NewBranch_Click" IsEnabled="{Binding HasRepository}" />
+                        <MenuItem Header="将当前分支变基到…" Click="Rebase_Click" IsEnabled="{Binding CanStartOperation}" />
                     </MenuItem>
                     <MenuItem Header="帮助 (_H)" Foreground="#D0D7DE">
+                        <MenuItem Header="Git 助手" Click="ToggleAssistant_Click" />
+                        <MenuItem Header="助手与 MCP 设置…" Click="AssistantSettings_Click" />
+                        <Separator />
                         <MenuItem Header="快捷键与使用说明" Click="Help_Click" />
                         <MenuItem Header="关于 GitManager" Click="About_Click" />
                     </MenuItem>
@@ -82,60 +95,54 @@
             </DockPanel>
         </Border>
 
-        <Border Grid.Row="1" Background="#24292F">
+        <Border Grid.Row="1" Grid.ColumnSpan="3" Background="#24292F">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="300" />
-                    <ColumnDefinition Width="270" />
-                    <ColumnDefinition Width="250" />
+                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="135" />
+                    <ColumnDefinition Width="135" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <Button Style="{StaticResource ToolbarButton}" Click="RepositorySelector_Click" ToolTip="{Binding RepositoryPath}">
+                <Button x:Name="RepositorySelectorButton" Style="{StaticResource CompactToolbarButton}" Click="RepositorySelector_Click" ToolTip="{Binding RepositoryPath}">
                     <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="30" /><ColumnDefinition Width="*" /><ColumnDefinition Width="16" /></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="22" /><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /></Grid.ColumnDefinitions>
                         <Path Grid.Column="0" Data="M 1,1 L 14,1 L 14,17 L 1,17 Z M 4,1 L 4,17 M 6,13 L 11,13" Stroke="#D0D7DE" StrokeThickness="1.3" Width="18" Height="20" Stretch="Uniform" VerticalAlignment="Center" />
                         <StackPanel Grid.Column="1">
-                            <TextBlock Text="Current repository" Foreground="#AEB8C4" FontSize="10.5" Margin="0,0,0,4" />
-                            <TextBlock Text="{Binding RepositoryName}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="Current repository" Foreground="#AEB8C4" FontSize="9" Margin="0,0,0,2" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding RepositoryName}" FontSize="11.5" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                         </StackPanel>
-                        <TextBlock Grid.Column="2" Text="⌄" FontSize="16" Foreground="#AEB8C4" />
+                        <TextBlock Grid.Column="2" Text="⌄" FontSize="13" Foreground="#AEB8C4" />
                     </Grid>
                 </Button>
-                <Button x:Name="BranchSelectorButton" Grid.Column="1" Style="{StaticResource ToolbarButton}" Click="BranchSelector_Click" IsEnabled="{Binding HasRepository}" ToolTip="切换或创建分支">
+                <Button x:Name="BranchSelectorButton" Grid.Column="1" Style="{StaticResource CompactToolbarButton}" Click="BranchSelector_Click" IsEnabled="{Binding HasRepository}" ToolTip="切换或创建分支">
                     <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="30" /><ColumnDefinition Width="*" /><ColumnDefinition Width="16" /></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="22" /><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /></Grid.ColumnDefinitions>
                         <Path Grid.Column="0" Data="M 4,3 L 4,17 M 4,12 C 4,9 14,12 14,4 M 2,1 L 6,1 L 6,5 L 2,5 Z M 12,1 L 16,1 L 16,5 L 12,5 Z M 2,16 L 6,16 L 6,20 L 2,20 Z" Stroke="#D0D7DE" StrokeThickness="1.3" Width="18" Height="21" Stretch="Uniform" VerticalAlignment="Center" />
                         <StackPanel Grid.Column="1">
-                            <TextBlock Text="Current branch" Foreground="#AEB8C4" FontSize="10.5" Margin="0,0,0,4" />
-                            <TextBlock Text="{Binding BranchName}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="Current branch" Foreground="#AEB8C4" FontSize="9" Margin="0,0,0,2" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding BranchName}" FontSize="11.5" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                         </StackPanel>
-                        <TextBlock Grid.Column="2" Text="⌄" FontSize="16" Foreground="#AEB8C4" />
+                        <TextBlock Grid.Column="2" Text="⌄" FontSize="13" Foreground="#AEB8C4" />
                     </Grid>
                 </Button>
-                <Border Grid.Column="2" BorderBrush="#424950" BorderThickness="0,0,1,0">
+                <Button x:Name="SyncButton" Grid.Column="2" Style="{StaticResource CompactToolbarButton}" Command="{Binding SyncCommand}" ToolTip="{Binding SyncToolTip}" AutomationProperties.Name="{Binding SyncTitle}">
                     <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="33" /></Grid.ColumnDefinitions>
-                        <Button x:Name="SyncButton" Style="{StaticResource ToolbarButton}" Command="{Binding SyncCommand}" ToolTip="{Binding SyncToolTip}" BorderThickness="0" Padding="17,9,8,9" AutomationProperties.Name="{Binding SyncTitle}">
-                            <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="29" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                <TextBlock Text="{Binding SyncGlyph}" FontSize="24" Foreground="#D0D7DE" />
-                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding SyncTitle}" FontWeight="SemiBold" FontSize="12.5" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Text="{Binding SyncSubtitle}" Foreground="#AEB8C4" FontSize="10" Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
-                                </StackPanel>
-                                <Border Grid.Column="2" Background="#56616D" CornerRadius="8" Padding="6,2" Margin="6,0,0,0" VerticalAlignment="Center" Visibility="{Binding HasSyncBadge, Converter={StaticResource BoolVisibility}}">
-                                    <TextBlock Text="{Binding SyncBadge}" FontSize="10" Foreground="#F6F8FA" />
-                                </Border>
-                            </Grid>
-                        </Button>
-                        <Button x:Name="SyncMenuButton" Grid.Column="1" Style="{StaticResource ToolbarButton}" Content="⌄" FontSize="16" Padding="0" BorderThickness="1,0,0,0" Click="SyncMenu_Click" IsEnabled="{Binding HasRepository}" ToolTip="选择 Fetch、Pull 或 Push" AutomationProperties.Name="同步操作菜单" />
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="20" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding SyncGlyph}" FontSize="18" Foreground="#D0D7DE" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding SyncTitle}" FontWeight="SemiBold" FontSize="11.5" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding SyncSubtitle}" Foreground="#AEB8C4" FontSize="9" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <Border Grid.Column="2" Background="#56616D" CornerRadius="8" Padding="4,1" Margin="4,0,0,0" VerticalAlignment="Center" Visibility="{Binding HasSyncBadge, Converter={StaticResource BoolVisibility}}">
+                            <TextBlock Text="{Binding SyncBadge}" FontSize="10" Foreground="#F6F8FA" />
+                        </Border>
                     </Grid>
-                </Border>
-                <TextBlock Grid.Column="3" Text="{Binding SyncStatus}" Foreground="#AEB8C4" Margin="20,0" TextTrimming="CharacterEllipsis" FontSize="11" />
+                </Button>
+                <Button x:Name="ToggleAssistantButton" Grid.Column="3" Content="✧  助手" Click="ToggleAssistant_Click" Style="{StaticResource CompactToolbarButton}" HorizontalAlignment="Right" Width="85" FontSize="11.5" BorderThickness="1,0,0,0" ToolTip="打开 Git 助手" />
             </Grid>
         </Border>
 
-        <Border Grid.Row="2" Background="#FFF4E5" BorderBrush="#EDC986" BorderThickness="0,0,0,1" Visibility="{Binding HasError, Converter={StaticResource BoolVisibility}}">
+        <Border Grid.Row="2" Grid.ColumnSpan="3" Background="#FFF4E5" BorderBrush="#EDC986" BorderThickness="0,0,0,1" Visibility="{Binding HasError, Converter={StaticResource BoolVisibility}}">
             <DockPanel Margin="16,9">
                 <Button DockPanel.Dock="Right" Content="关闭" Command="{Binding DismissErrorCommand}" Padding="10,3" Margin="16,0,0,0" />
                 <TextBlock DockPanel.Dock="Left" Text="!" Foreground="#9A6700" FontWeight="Bold" FontSize="18" Margin="0,0,12,0" />
@@ -144,14 +151,25 @@
         </Border>
 
         <Grid Grid.Row="3" x:Name="RepositoryWorkspace" Visibility="{Binding HasRepository, Converter={StaticResource BoolVisibility}}">
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="ChangesColumn" Width="280" MinWidth="225" />
                 <ColumnDefinition Width="5" />
                 <ColumnDefinition x:Name="HistoryColumn" Width="420" MinWidth="280" />
                 <ColumnDefinition Width="5" />
-                <ColumnDefinition Width="*" MinWidth="390" />
+                <ColumnDefinition x:Name="DetailsColumn" Width="*" MinWidth="390" />
             </Grid.ColumnDefinitions>
-            <Grid Grid.Column="0" x:Name="ChangesColumnPane" Background="White">
+            <Border x:Name="OperationBanner" Grid.ColumnSpan="5" Background="#FFF4DA" Padding="12,7" BorderBrush="#E3CA89" BorderThickness="0,0,0,1" Visibility="{Binding HasActiveOperation, Converter={StaticResource BoolVisibility}}">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="处理冲突…" Click="ResolveConflict_Click" Margin="0,0,7,0" IsEnabled="{Binding IsBusy, Converter={StaticResource Not}}" />
+                        <Button x:Name="ContinueOperationButton" Content="{Binding ContinueOperationLabel}" Click="ContinueOperation_Click" IsEnabled="{Binding CanContinueOperation}" Margin="0,0,7,0" />
+                        <Button Content="{Binding AbortOperationLabel}" Click="AbortOperation_Click" IsEnabled="{Binding IsBusy, Converter={StaticResource Not}}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding OperationLabel}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
+                </DockPanel>
+            </Border>
+            <Grid Grid.Row="1" Grid.Column="0" x:Name="ChangesColumnPane" Background="White">
                 <Grid.RowDefinitions><RowDefinition x:Name="ChangesBodyRow" Height="2.2*" MinHeight="260" /><RowDefinition Height="5" /><RowDefinition x:Name="ExplorerRow" Height="*" MinHeight="100" /></Grid.RowDefinitions>
                 <Grid x:Name="ChangesPane">
                 <Grid>
@@ -165,6 +183,10 @@
                             </TextBlock>
                         </Grid>
                         <DockPanel>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button x:Name="StashesButton" Content="{Binding StashLabel}" Click="Stashes_Click" Padding="5,2" FontSize="10" Margin="3,0,2,0" ToolTip="保存、查看与应用 Stash" />
+                                <Button Content="恢复" Click="Recovery_Click" Padding="5,2" FontSize="10" ToolTip="备份与恢复" />
+                            </StackPanel>
                             <CheckBox x:Name="SelectAllChangesCheckBox" IsChecked="{Binding AllChangesIncluded, Mode=OneWay}" IsThreeState="True"
                                       Command="{Binding ToggleAllChangesCommand}"
                                       FontWeight="SemiBold" VerticalContentAlignment="Center" ToolTip="全选或取消选择本次提交的文件">
@@ -239,8 +261,8 @@
                 </Grid>
 
             </Grid>
-            <GridSplitter x:Name="ChangesSplitter" Grid.Column="1" Width="5" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext" ResizeDirection="Columns" Cursor="SizeWE" />
-            <Grid Grid.Column="2" x:Name="HistoryPane">
+            <GridSplitter x:Name="ChangesSplitter" Grid.Row="1" Grid.Column="1" Width="5" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext" ResizeDirection="Columns" Cursor="SizeWE" />
+            <Grid Grid.Row="1" Grid.Column="2" x:Name="HistoryPane">
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="30" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                     <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" Padding="12,10">
@@ -276,21 +298,25 @@
                             <TextBlock Text="● HEAD" Foreground="{StaticResource BlueBrush}" FontSize="10" HorizontalAlignment="Right" />
                         </DockPanel>
                     </Border>
-                    <ListBox x:Name="CommitList" Grid.Row="2" ItemsSource="{Binding Commits}" SelectedItem="{Binding SelectedCommit, Mode=TwoWay}" SelectionChanged="CommitList_SelectionChanged" AutomationProperties.Name="提交历史与分支图" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox x:Name="CommitList" Grid.Row="2" ItemsSource="{Binding Commits}" SelectedItem="{Binding SelectedCommit, Mode=TwoWay}" SelectionChanged="CommitList_SelectionChanged" PreviewMouseRightButtonUp="CommitList_PreviewMouseRightButtonUp" AutomationProperties.Name="提交历史与分支图" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem"><ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch" /></ControlTemplate></Setter.Value></Setter>
                                 <Style.Triggers><DataTrigger Binding="{Binding IsVisible}" Value="False"><Setter Property="IsEnabled" Value="False" /><Setter Property="Focusable" Value="False" /></DataTrigger></Style.Triggers>
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                             <StackPanel>
-                                <Grid Height="{x:Static vm:CommitItem.RowHeight}" ToolTipService.IsEnabled="{Binding IsVisible}" ToolTipService.InitialShowDelay="400" ToolTipService.ShowDuration="60000">
+                                <Grid x:Name="CommitHeaderRow" Height="{x:Static vm:CommitItem.RowHeight}" MouseLeftButtonUp="CommitHeader_Click" ToolTipService.IsEnabled="{Binding IsVisible}" ToolTipService.InitialShowDelay="400" ToolTipService.ShowDuration="60000">
+                                    <Grid.Style><Style TargetType="Grid"><Setter Property="Background" Value="Transparent" /><Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#F3F6F9" /></Trigger><DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True"><Setter Property="Background" Value="#DDF0FF" /></DataTrigger></Style.Triggers></Style></Grid.Style>
                                     <Grid.ToolTip>
                                         <ToolTip MaxWidth="560" Placement="Right" Opened="CommitToolTip_Opened" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                                             <StackPanel MaxWidth="530">
-                                                <TextBlock Text="{Binding AuthorDetails}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                                                <TextBlock Text="{Binding Timestamp}" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,4,0,10" />
+                                                <Grid Margin="0,0,0,10"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding AuthorDetails}" FontWeight="SemiBold" MaxWidth="200" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="1" Text="{Binding Timestamp}" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="10,0,0,0" />
+                                                </Grid>
                                                 <TextBlock Text="{Binding Commit.Subject}" FontWeight="SemiBold" TextWrapping="Wrap" />
                                                 <TextBlock Text="{Binding Commit.Body}" TextWrapping="Wrap" Margin="0,6,0,0" Visibility="{Binding Commit.Body, Converter={StaticResource StringVisibility}}" />
                                                 <Border Height="1" Background="{StaticResource BorderBrush}" Margin="0,10" />
@@ -309,7 +335,7 @@
                                     </Grid.ToolTip>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" MinWidth="0" /></Grid.ColumnDefinitions>
                                     <controls:GraphCell Width="{Binding GraphWidth}" Row="{Binding Graph}" IsNodeVisible="{Binding IsVisible}" />
-                                    <Border Grid.Column="1" Padding="18,0,7,0" ClipToBounds="True" Background="Transparent" MouseLeftButtonUp="CommitHeader_Click">
+                                    <Border Grid.Column="1" Padding="18,0,7,0" ClipToBounds="True" Background="Transparent">
                                         <Border.Style><Style TargetType="Border"><Style.Triggers><DataTrigger Binding="{Binding IsVisible}" Value="False"><Setter Property="Visibility" Value="Hidden" /></DataTrigger></Style.Triggers></Style></Border.Style>
                                         <TextBlock x:Name="CommitSummaryText" FontSize="12" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" VerticalAlignment="Center">
                                             <Run Text="{Binding Subject, Mode=OneWay}" /><Run Text="{Binding AuthorSuffix, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" />
@@ -354,8 +380,8 @@
 
 
             </Grid>
-            <GridSplitter x:Name="HistorySplitter" Grid.Column="3" Width="5" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext" ResizeDirection="Columns" Cursor="SizeWE" />
-            <Grid Grid.Column="4" x:Name="DetailsPane">
+            <GridSplitter x:Name="HistorySplitter" Grid.Row="1" Grid.Column="3" Width="5" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext" ResizeDirection="Columns" Cursor="SizeWE" />
+            <Grid Grid.Row="1" Grid.Column="4" x:Name="DetailsPane">
                 <Grid.RowDefinitions><RowDefinition x:Name="MetadataRow" Height="190" MinHeight="95" /><RowDefinition Height="5" /><RowDefinition Height="*" MinHeight="220" /></Grid.RowDefinitions>
                 <Border BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" Padding="15,10">
                     <ScrollViewer x:Name="CommitDetailsScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -391,12 +417,7 @@
                         <Border Grid.Row="1" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" Background="#FAFBFC" Padding="10,0">
                             <DockPanel>
                                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                    <Border Background="#EAF0F5" CornerRadius="4" Padding="2" VerticalAlignment="Center">
-                                        <StackPanel Orientation="Horizontal">
-                                            <ToggleButton x:Name="SplitDiffButton" Style="{StaticResource SegmentButton}" IsChecked="{Binding IsSplitDiff, Mode=OneWay}" Click="SplitDiff_Click" Content="并排" FontSize="10" Padding="9,2" />
-                                            <ToggleButton x:Name="UnifiedDiffButton" Style="{StaticResource SegmentButton}" IsChecked="{Binding IsSplitDiff, Converter={StaticResource Not}, Mode=OneWay}" Click="UnifiedDiff_Click" Content="统一" FontSize="10" Padding="9,2" />
-                                        </StackPanel>
-                                    </Border>
+                                    <Button Content="解决冲突…" Click="ResolveConflict_Click" Padding="7,2" Visibility="{Binding CanResolveSelectedFile, Converter={StaticResource BoolVisibility}}" />
                                     <Button Click="CopyDiff_Click" Content="⧉" Padding="6,1" BorderThickness="0" Background="Transparent" Margin="5,0,0,0" ToolTip="复制完整 Diff" />
                                 </StackPanel>
                                 <CheckBox DockPanel.Dock="Left" Content="查看已暂存" IsChecked="{Binding ShowStagedDiff}" FontSize="10" VerticalAlignment="Center" Margin="0,0,12,0" Visibility="{Binding CanChooseDiffSource, Converter={StaticResource BoolVisibility}}" />
@@ -404,7 +425,7 @@
                             </DockPanel>
                         </Border>
                         <ScrollViewer x:Name="DiffScrollViewer" Grid.Row="2" CanContentScroll="True" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Background="White">
-                            <controls:DiffView x:Name="FileDiffView" Document="{Binding Diff}" IsSplit="{Binding IsSplitDiff}" AutomationProperties.Name="文件差异" />
+                            <controls:DiffView x:Name="FileDiffView" Document="{Binding Diff}" IsSplit="True" AutomationProperties.Name="文件差异" />
                         </ScrollViewer>
                         <Border Grid.Row="2" Background="#F3FFFFFF" Visibility="{Binding IsLoadingDiff, Converter={StaticResource BoolVisibility}}" IsHitTestVisible="False">
                             <TextBlock Text="正在读取 Diff…" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,30,0,0" />
@@ -455,7 +476,10 @@
             </StackPanel>
         </Grid>
 
-        <Border Grid.Row="4" Background="#F6F8FA" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Padding="12,0">
+        <GridSplitter x:Name="AssistantSplitter" Grid.Row="3" Grid.Column="1" Width="5" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext" ResizeDirection="Columns" Visibility="Collapsed" />
+        <controls:AssistantPane x:Name="AssistantPanel" Grid.Row="3" Grid.Column="2" Visibility="Collapsed" />
+
+        <Border Grid.Row="4" Grid.ColumnSpan="3" Background="#F6F8FA" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Padding="12,0">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <Button Content="取消" Command="{Binding CancelCommand}" Padding="7,1" Margin="0,0,10,0" BorderThickness="0" Background="Transparent" FontSize="10.5" Visibility="{Binding IsBusy, Converter={StaticResource BoolVisibility}}" />

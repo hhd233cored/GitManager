@@ -24,10 +24,11 @@ public sealed record ChangedFile(string Path, string? OldPath, char IndexStatus,
     bool IsHistory = false)
 {
     public bool IsUntracked => IndexStatus == '?' && WorkTreeStatus == '?';
+    public bool IsConflicted => IndexStatus == 'U' || WorkTreeStatus == 'U' || (IndexStatus == WorkTreeStatus && IndexStatus is 'A' or 'D');
     public bool HasStagedChanges => !IsHistory && IndexStatus is not (' ' or '?' or '!');
     public bool HasUnstagedChanges => !IsHistory && (IsUntracked || WorkTreeStatus != ' ');
     public bool? StageState => HasStagedChanges ? HasUnstagedChanges ? null : true : false;
-    public char Status => IsHistory ? IndexStatus : IsUntracked ? 'A' : WorkTreeStatus != ' ' ? WorkTreeStatus : IndexStatus;
+    public char Status => IsHistory ? IndexStatus : IsConflicted ? 'U' : IsUntracked ? 'A' : WorkTreeStatus != ' ' ? WorkTreeStatus : IndexStatus;
     public string StatusLabel => Status switch
     {
         'A' => "新增", 'D' => "删除", 'R' => "重命名", 'C' => "复制", 'U' => "冲突", 'T' => "类型变更", _ => "修改"

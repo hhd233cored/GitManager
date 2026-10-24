@@ -42,6 +42,30 @@ internal static class Program
                 Assert(vm.Error.Length == 0, vm.Error);
                 Assert(vm.SelectedCommit is not null && vm.Files.Count > 0 && vm.Commits.Count >= 12, "History did not load real Git data.");
                 await ChangesAndMenuChecks.CheckMenusAsync(window, output);
+                if (args.Contains("--assistant-only", StringComparer.Ordinal))
+                {
+                    await AssistantChecks.RunAsync(window, output, Render);
+                    Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
+                    return;
+                }
+                if (args.Contains("--repositories-only", StringComparer.Ordinal))
+                {
+                    await RepositoryChecks.RunAsync(window, repository, output, Render);
+                    Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
+                    return;
+                }
+                if (args.Contains("--menus-only", StringComparer.Ordinal))
+                {
+                    await MenuPlacementChecks.RunAsync(window, output);
+                    Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
+                    return;
+                }
+                if (args.Contains("--operations-only", StringComparer.Ordinal))
+                {
+                    await OperationsChecks.RunAsync(window, repository, output, Render);
+                    Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
+                    return;
+                }
                 if (args.Contains("--review-only", StringComparer.Ordinal))
                 {
                     await CompactDetailsChecks.RunAsync(window, output, Render, reviewRepository: true);
@@ -105,10 +129,8 @@ internal static class Program
                 vm.SelectedFile = vm.Files.First(file => file.Path.EndsWith("HistoryView.xaml", StringComparison.Ordinal));
                 await Until(() => !vm.IsLoadingDiff && vm.Diff is not null, "load view diff");
                 await Render(window, Path.Combine(output, "history.png"));
-                ((ToggleButton)window.FindName("UnifiedDiffButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                Assert(!vm.IsSplitDiff, "Unified diff switch did not update.");
-                await Render(window, Path.Combine(output, "history-unified.png"));
-                ((ToggleButton)window.FindName("SplitDiffButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert(window.FindName("UnifiedDiffButton") is null && window.FindName("SplitDiffButton") is null && diffView.IsSplit,
+                    "Diff should stay split without the removed mode buttons.");
                 ((ListBox)window.FindName("ChangesList")).SelectedItem = vm.WorkingFiles.First();
                 await Until(() => !vm.IsLoadingDiff, "Changes navigation");
                 Assert(vm.IsChanges && changes.IsVisible && history.IsVisible, "Selecting Changes must keep History visible.");
@@ -168,6 +190,7 @@ internal static class Program
                 await AppearanceChecks.RunAsync(window, output, Render);
                 await ConcurrentHistoryChecks.RunAsync(window, output, Render);
                 await CompactDetailsChecks.RunAsync(window, output, Render);
+                await OperationsChecks.RunAsync(window, repository, output, Render);
                 Assert(bindings.Errors.Count == 0, string.Join(Environment.NewLine, bindings.Errors));
                 Console.WriteLine("PASS WPF compact history, graph, wrapped Diff, virtualization, repository management, unified sync, commit inclusion, menus and capsule scrollbars.");
                 Console.WriteLine($"Screenshots: {output}");

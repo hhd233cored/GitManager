@@ -4,6 +4,7 @@ using System.Windows.Input;
 using GitManager.App.Infrastructure;
 using GitManager.App.Controls;
 using GitManager.Core;
+using GitManager.Services;
 
 namespace GitManager.App.ViewModels;
 
@@ -14,7 +15,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly bool _persistSettings;
     private bool _updatingCommits;
     private bool _updatingFiles;
-    private readonly SemaphoreSlim _operationLock = new(1, 1);
+    public RepositoryCoordinator Coordinator { get; } = new();
+    public RepositoryTools RepositoryTools { get; }
     private CancellationTokenSource? _operationCancellation;
     private CancellationTokenSource? _selectionCancellation;
     private CancellationTokenSource? _diffCancellation;
@@ -29,13 +31,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private string _notice = "打开一个仓库，开始查看提交历史。";
     private bool _isHistory = true;
     private bool _allBranches;
-    private bool _isSplitDiff = true;
     private bool _showStagedDiff;
     private string _historySearch = "";
     private string _fileSearch = "";
     private string _summary = "";
     private string _description = "";
     private string _lastFetched = "";
+    private string? _fetchedSyncContext;
     private int _historyLimit = 300;
     private bool _canLoadMore;
     private CommitItem? _selectedCommit;
@@ -56,6 +58,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public MainViewModel(bool persistSettings = true, SettingsStore? settingsStore = null)
     {
         _persistSettings = persistSettings;
+        RepositoryTools = new RepositoryTools(_git, Coordinator, persistSettings ? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GitManager", "operations.jsonl") : null);
         _store = settingsStore ?? new SettingsStore();
         var settings = persistSettings ? _store.Load() : new AppSettings([], null);
         _allBranches = settings.AllBranches;
@@ -72,10 +76,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         LastRepository = settings.LastRepository;
         RefreshCommand = new AsyncCommand(() => RefreshAsync(), () => HasRepository && !IsBusy);
         FetchCommand = new AsyncCommand(FetchAsync, () => HasRepository && Repository!.HasRemote && !IsBusy);
-        PullCommand = new AsyncCommand(PullAsync, () => HasRepository && Repository!.Upstream is not null && !IsBusy);
-        PushCommand = new AsyncCommand(PushAsync, () => HasRepository && Repository!.HasRemote && Repository.HasHead && !Repository.IsDetached && !IsBusy);
-        SyncCommand = new AsyncCommand(ExecuteSyncAsync, () => !IsBusy && SyncState.IsEnabled);
-        CommitCommand = new AsyncCommand(CommitAsync, () => HasRepository && !IsBusy && IncludedCount > 0 && !string.IsNullOrWhiteSpace(Summary));
+        PullCommand = new AsyncCommand(PullAsync, () => HasRepository && Repository!.Upstream is not null && !IsBusy && !HasActiveOperation);
+        PushCommand = new AsyncCommand(PushAsync, () => HasRepository && Repository!.HasRemote && Repository.HasHead && !Repository.IsDetached && !IsBusy && !HasActiveOperation);
+        SyncCommand = new AsyncCommand(ExecuteSyncAsync, () => !IsBusy && SyncState.IsEnabled && !HasActiveOperation);
+        CommitCommand = new AsyncCommand(CommitAsync, () => HasRepository && !IsBusy && !HasActiveOperation && IncludedCount > 0 && !string.IsNullOrWhiteSpace(Summary));
         ToggleAllChangesCommand = new RelayCommand(() => SetAllChangesIncluded(AllChangesIncluded != true), () => HasRepository && ChangeCount > 0 && !IsBusy);
         LoadMoreCommand = new AsyncCommand(async () => { _historyLimit += 300; await RefreshAsync(); }, () => HasRepository && CanLoadMore && !IsBusy);
         CancelCommand = new RelayCommand(() => _operationCancellation?.Cancel(), () => IsBusy);
@@ -114,9 +118,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         get => _repository;
         private set
         {
+            var previousContext = CurrentSyncContext;
             if (!Set(ref _repository, value)) return;
-            foreach (var name in new[] { nameof(HasRepository), nameof(RepositoryName), nameof(BranchName), nameof(SyncStatus), nameof(PushLabel), nameof(CommitButtonLabel), nameof(RepositoryPath) }) Raise(name);
+            RepositoryTools.SetRepository(value?.Path, value?.Branch ?? "");
+            if (previousContext != CurrentSyncContext) _fetchedSyncContext = null;
+            foreach (var name in new[] { nameof(HasRepository), nameof(RepositoryName), nameof(BranchName), nameof(PushLabel), nameof(CommitButtonLabel), nameof(RepositoryPath) }) Raise(name);
             RaiseSyncProperties();
+            RaiseOperationProperties();
         }
     }
     public bool HasRepository => Repository is not null;
@@ -124,9 +132,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         : Repositories.FirstOrDefault(entry => RepositoryEntry.SamePath(entry.Path, Repository.Path))?.Name ?? Repository.Name;
     public string RepositoryPath => Repository?.Path ?? "选择文件夹或克隆远程仓库";
     public string BranchName => Repository?.Branch ?? "未选择仓库";
-    public string SyncStatus => Repository is null ? "本地 Git 客户端" : Repository.Upstream is null ? "尚未跟踪远程分支" : $"↑ {Repository.Ahead}   ↓ {Repository.Behind}  ·  {Repository.Upstream}";
     public string PushLabel => Repository?.Upstream is null ? "发布分支" : "Push";
-    public RepositorySyncState SyncState => RepositorySyncState.From(Repository);
+    private string? CurrentSyncContext => Repository is null ? null
+        : $"{Repository.Path.ToUpperInvariant()}\0{Repository.Branch}\0{Repository.RemoteName}\0{Repository.Upstream}";
+    private bool HasFetchedCurrentContext => _fetchedSyncContext is not null && _fetchedSyncContext == CurrentSyncContext;
+    public RepositorySyncState SyncState => RepositorySyncState.From(Repository, HasFetchedCurrentContext);
     public string SyncTitle => SyncState.Label;
     public string SyncGlyph => SyncState.Glyph;
     public string SyncBadge => SyncState.Badge;
@@ -134,22 +144,24 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public string SyncSubtitle => Repository is null ? "选择仓库以同步"
         : !Repository.HasRemote ? "尚未配置远程仓库"
         : Repository.IsDetached ? "分离的 HEAD · 可获取远程更新"
+        : Repository.Upstream is not null && !HasFetchedCurrentContext ? "先获取最新远程状态"
         : Repository.Ahead > 0 && Repository.Behind > 0 ? "分支已分叉 · 需先合并或变基"
         : SyncState.Action == SyncAction.Publish ? "将当前分支发布到远程"
         : LastFetched.Length > 0 ? LastFetched : "尚未获取远程更新";
     public string SyncToolTip => !SyncState.IsEnabled ? SyncSubtitle : SyncState.Action switch
     {
+        SyncAction.Resolve => "两边都有独有提交，选择合并、变基或采用某一端的版本。",
         SyncAction.Pull => "拉取远程更新（仅快进）；分支分叉时保留现状并显示 Git 错误。",
         SyncAction.Push => "推送当前分支到它的上游分支。",
         SyncAction.Publish => $"发布当前分支到 {SyncState.RemoteName}，并设置上游分支。",
-        _ => $"从 {SyncState.RemoteName} 获取远程更新，不修改工作区。"
+        _ => $"从 {SyncState.RemoteName} 获取最新状态，随后按提交差异显示 Pull 或 Push。"
     };
     public bool CanManageRepositories => !IsBusy;
     public string LastFetched { get => _lastFetched; private set { Set(ref _lastFetched, value); RaiseSyncProperties(); } }
     public bool IsBusy
     {
         get => _isBusy;
-        private set { Set(ref _isBusy, value); Raise(nameof(CanManageRepositories)); CommandManager.InvalidateRequerySuggested(); }
+        private set { Set(ref _isBusy, value); Raise(nameof(CanManageRepositories)); RaiseOperationProperties(); CommandManager.InvalidateRequerySuggested(); }
     }
     public string BusyMessage { get => _busyMessage; private set => Set(ref _busyMessage, value); }
     public string Error { get => _error; private set { Set(ref _error, value); Raise(nameof(HasError)); } }
@@ -162,6 +174,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (!Set(ref _isHistory, value)) return;
+            if (!value) ClearStashPreview();
             Raise(nameof(IsChanges));
             if (value)
             {
@@ -184,7 +197,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (HasRepository && !IsBusy) { _historyLimit = 300; _ = RefreshAsync(); }
         }
     }
-    public bool IsSplitDiff { get => _isSplitDiff; set => Set(ref _isSplitDiff, value); }
     public bool ShowStagedDiff
     {
         get => _showStagedDiff;
@@ -212,14 +224,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public int IncludedCount => _workingFiles.Count(file => IsFileIncluded(file.Path));
     public bool? AllChangesIncluded => ChangeCount == 0 || IncludedCount == 0 ? false : IncludedCount == ChangeCount ? true : null;
     public int CommitCount => _allCommits.Count;
-    public int FileCount => IsHistory ? _commitFiles.Count : _workingFiles.Count;
+    public int FileCount => IsStash ? _stashFiles.Length : IsHistory ? _commitFiles.Count : _workingFiles.Count;
     public string CommitButtonLabel => $"提交 {IncludedCount} 个文件到 {BranchName}";
     public bool CanLoadMore { get => _canLoadMore; private set => Set(ref _canLoadMore, value); }
     public bool IsLoadingDetails { get => _isLoadingDetails; private set => Set(ref _isLoadingDetails, value); }
     public bool IsLoadingDiff { get => _isLoadingDiff; private set => Set(ref _isLoadingDiff, value); }
-    public bool HasCommit => IsHistory && SelectedCommit is not null;
-    public string DetailSubject => IsHistory ? SelectedCommit?.Commit.Subject ?? (HasHistoryPathFilter ? "该路径没有匹配的已加载提交" : "选择一条提交") : "工作区变更";
-    public string DetailBody => IsHistory ? SelectedCommit?.Commit.Body ?? "" : "选择文件查看变更，勾选要包含在本次提交中的文件。";
+    public bool HasCommit => IsHistory && !IsStash && SelectedCommit is not null;
+    public string DetailSubject => IsStash ? "Stash · " + SelectedStash!.Message : IsHistory ? SelectedCommit?.Commit.Subject ?? (HasHistoryPathFilter ? "该路径没有匹配的已加载提交" : "选择一条提交") : "工作区变更";
+    public string DetailBody => IsStash ? $"{SelectedStash!.Selector} · {SelectedStash.Date.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : IsHistory ? SelectedCommit?.Commit.Body ?? "" : "选择文件查看变更，勾选要包含在本次提交中的文件。";
     public string DetailAuthor => SelectedCommit?.Commit.Author ?? "";
     public string DetailDate => SelectedCommit?.Commit.Date.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz") ?? "";
     public string DetailSha => SelectedCommit?.Commit.Id ?? "";
@@ -231,8 +243,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     };
     public string FileTitle => SelectedFile?.DisplayPath ?? "选择一个文件查看 Diff";
     public string FileStatus => SelectedFile?.StatusLabel ?? "";
-    public bool CanChooseDiffSource => IsChanges && SelectedFile is { HasStagedChanges: true, HasUnstagedChanges: true };
-    public string DiffSourceLabel => IsHistory ? "提交变更" : ShowStagedDiff ? "已暂存的变更" : "文件全部变更";
+    public bool CanChooseDiffSource => IsChanges && SelectedFile is { HasStagedChanges: true, HasUnstagedChanges: true } && !SelectedFile.File.IsConflicted;
+    public string DiffSourceLabel => IsStash ? "Stash · " + SelectedStash!.Selector : IsHistory ? "提交变更" : ShowStagedDiff ? "已暂存的变更" : "文件全部变更";
     public CommitItem? SelectedCommit
     {
         get => _selectedCommit;
@@ -240,7 +252,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             if (_updatingCommits) return;
             if (value is { IsVisible: false }) return;
-            var changed = Set(ref _selectedCommit, value);
+            if (_selectedFile?.File.IsHistory == true) _selectedFile.IsSelected = false;
+            var wasStash = IsStash;
+            ClearStashPreview();
+            var changed = Set(ref _selectedCommit, value) || wasStash;
             if (!IsHistory) { IsHistory = true; return; }
             if (!changed) return;
             RaiseDetailProperties();
@@ -267,10 +282,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             var previous = _selectedFile;
             if (!Set(ref _selectedFile, value)) return;
             if (previous is not null) previous.IsSelected = false;
-            if (value is not null) value.IsSelected = true;
+            if (value is not null) value.IsSelected = !IsHistory || IsStash;
             if (value is not null)
             {
-                if (IsHistory && SelectedCommit is not null) _historyFileSelections[SelectedCommit.Commit.Id] = value.Path;
+                if (IsHistory && !IsStash && SelectedCommit is not null) _historyFileSelections[SelectedCommit.Commit.Id] = value.Path;
                 else if (IsChanges) _workingSelectionPath = value.Path;
             }
             if (value is not null && IsChanges) _showStagedDiff = false;
@@ -280,6 +295,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Raise(nameof(SelectedWorkingFile));
             }
             foreach (var name in new[] { nameof(FileTitle), nameof(FileStatus), nameof(CanChooseDiffSource), nameof(ShowStagedDiff), nameof(DiffSourceLabel) }) Raise(name);
+            Raise(nameof(CanResolveSelectedFile));
             _ = LoadDiffAsync();
         }
     }
@@ -347,6 +363,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _repositoryCancellation.Dispose();
         _repositoryCancellation = new CancellationTokenSource();
         _commitDetails.Clear();
+        Stashes.Clear();
+        RecoveryPoints.Clear();
+        ClearStashPreview();
+        CurrentOperation = new RepositoryOperation(RepositoryOperationKind.None, []);
         _selectionCancellation?.Cancel();
         _diffCancellation?.Cancel();
         _watcher?.Dispose();
@@ -456,7 +476,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var filesTask = _git.GetStatusAsync(path, ct);
         var branchesTask = _git.GetBranchesAsync(path, ct);
         var treeTask = _git.GetRepositoryFilesAsync(path, ct);
-        await Task.WhenAll(infoTask, historyTask, filesTask, branchesTask, treeTask);
+        var stashesTask = _git.GetStashesAsync(path, ct);
+        var recoveryTask = _git.GetRecoveryPointsAsync(path, ct);
+        var operationTask = _git.GetOperationAsync(path, ct);
+        await Task.WhenAll(infoTask, historyTask, filesTask, branchesTask, treeTask, stashesTask, recoveryTask, operationTask);
         Repository = await infoTask;
         var history = await historyTask;
         CanLoadMore = history.HasMore;
@@ -468,7 +491,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }).ToArray();
         _workingFiles = await filesTask;
         ReconcileInclusions();
+        CurrentOperation = await operationTask;
+        Stashes.Clear();
+        foreach (var entry in await stashesTask) Stashes.Add(entry);
+        RecoveryPoints.Clear();
+        foreach (var entry in await recoveryTask) RecoveryPoints.Add(entry);
+        Raise(nameof(StashLabel));
+        RaiseOperationProperties();
         UpdateWorkingFiles();
+        if (CurrentOperation.HasConflicts) IsHistory = false;
         UpdateRepositoryTree(await treeTask);
         Branches.Clear();
         foreach (var branch in await branchesTask) Branches.Add(branch);
@@ -479,7 +510,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Raise(nameof(StagedCount));
         RaiseInclusionProperties();
         RaiseDetailProperties();
-        if (IsHistory) await LoadCommitDetailsAsync(SelectedCommit);
+        if (IsStash)
+        {
+            var entry = Stashes.FirstOrDefault(item => item.Id == SelectedStash!.Id);
+            if (entry is not null) await ViewStashAsync(entry);
+            else { ClearStashPreview(); await LoadCommitDetailsAsync(SelectedCommit); }
+        }
+        else if (IsHistory) await LoadCommitDetailsAsync(SelectedCommit);
         else UpdateFiles(forceDiff: true);
         CommandManager.InvalidateRequerySuggested();
     }
@@ -502,7 +539,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var changed = !Equals(_selectedCommit, selection);
         _selectedCommit = selection;
         if (selectedId is null && selection is not null) selection.Details.IsExpanded = true;
-        if (changed && IsHistory) _ = LoadCommitDetailsAsync(selection);
+        if (changed && IsHistory && !IsStash) _ = LoadCommitDetailsAsync(selection);
         Raise(nameof(SelectedCommit));
         Raise(nameof(VisibleCommitCount));
         Raise(nameof(HistoryPathSummary));
@@ -528,6 +565,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task LoadCommitDetailsAsync(CommitItem? item)
     {
+        if (IsStash) return;
         _selectionCancellation?.Cancel();
         _selectionCancellation?.Dispose();
         var cancellation = _selectionCancellation = new CancellationTokenSource();
@@ -552,7 +590,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var oldPath = IsHistory && SelectedCommit is not null
             ? _historyFileSelections.GetValueOrDefault(SelectedCommit.Commit.Id) : _workingSelectionPath;
-        var filtered = IsHistory ? SelectedCommit?.Details.Files.ToArray() ?? [] : WorkingFiles.ToArray();
+        var filtered = IsStash ? _stashFiles : IsHistory ? SelectedCommit?.Details.Files.ToArray() ?? [] : WorkingFiles.ToArray();
         _updatingFiles = true;
         try
         {
@@ -592,12 +630,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Raise(nameof(DiffSourceLabel));
         if (SelectedFile is null || Repository is null) return;
         var file = SelectedFile.File;
-        var commit = IsHistory ? SelectedCommit?.Commit : null;
-        if (IsHistory && commit is null) return;
+        var stash = SelectedStash;
+        var commit = IsHistory && !IsStash ? SelectedCommit?.Commit : null;
+        if (IsHistory && !IsStash && commit is null) return;
         IsLoadingDiff = true;
         try
         {
-            var patch = await _git.GetDiffAsync(Repository.Path, file, commit, ShowStagedDiff, cancellation.Token, includeAllChanges: IsChanges && !ShowStagedDiff);
+            var patch = stash is not null ? await _git.GetStashDiffAsync(Repository.Path, stash.Id, file, cancellation.Token)
+                : await _git.GetDiffAsync(Repository.Path, file, commit, ShowStagedDiff, cancellation.Token, includeAllChanges: IsChanges && !ShowStagedDiff);
             var document = await Task.Run(() => DiffParser.Parse(patch), cancellation.Token);
             if (!cancellation.IsCancellationRequested) Diff = document;
         }
@@ -650,6 +690,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private Task FetchAsync() => MutateAsync("正在获取远程更新…", async ct =>
     {
+        _fetchedSyncContext = null;
+        RaiseSyncProperties();
         await _git.FetchAsync(Repository!.Path, ct);
         MarkFetched();
     }, "已获取远程更新");
@@ -661,12 +703,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void MarkFetched()
     {
         if (Repository is null) return;
+        _fetchedSyncContext = CurrentSyncContext;
         LastFetched = $"上次获取 {DateTime.Now:HH:mm}";
         _fetchTimes[Repository.Path] = LastFetched;
     }
     private Task PushAsync() => MutateAsync("正在推送提交…", ct => _git.PushAsync(Repository!.Path, ct), "已推送到远程仓库");
     private Task ExecuteSyncAsync() => SyncState.Action switch
     {
+        SyncAction.Resolve => RequestSyncResolutionAsync(),
         SyncAction.Pull => PullAsync(),
         SyncAction.Push or SyncAction.Publish => PushAsync(),
         _ => FetchAsync()
@@ -689,6 +733,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private Task MutateAsync(string message, Func<CancellationToken, Task> action, string success) => RunOperationAsync(message, async ct =>
     {
         if (Repository is null) return;
+        _selectionCancellation?.Cancel();
+        _diffCancellation?.Cancel();
         try { await action(ct); }
         finally
         {
@@ -703,12 +749,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (_disposed) return;
         // Passive refresh may be skipped; explicit user operations must wait instead of disappearing.
-        if (silent)
-        {
-            if (!await _operationLock.WaitAsync(0)) return;
-        }
-        else await _operationLock.WaitAsync();
-        if (_disposed) { _operationLock.Release(); return; }
+        using var lease = await Coordinator.EnterAsync(wait: !silent);
+        if (lease is null || _disposed) return;
         using var cancellation = new CancellationTokenSource();
         _operationCancellation = cancellation;
         if (!silent) { IsBusy = true; BusyMessage = message; }
@@ -720,7 +762,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             _operationCancellation = null;
             if (!silent) { IsBusy = false; BusyMessage = ""; }
-            _operationLock.Release();
         }
     }
 

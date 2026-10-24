@@ -1,6 +1,10 @@
 <Solution>
   <Project Path="src/GitManager.Core/GitManager.Core.csproj" />
   <Project Path="src/GitManager.App/GitManager.App.csproj" />
+  <Project Path="src/GitManager.Services/GitManager.Services.csproj" />
+  <Project Path="src/GitManager.Agent/GitManager.Agent.csproj" />
+  <Project Path="src/GitManager.Mcp/GitManager.Mcp.csproj" />
   <Project Path="tests/GitManager.Tests/GitManager.Tests.csproj" />
+  <Project Path="tests/GitManager.AgentChecks/GitManager.AgentChecks.csproj" />
   <Project Path="tests/GitManager.UiChecks/GitManager.UiChecks.csproj" />
 </Solution>

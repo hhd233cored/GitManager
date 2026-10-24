@@ -1,0 +1,12 @@
+<Window x:Class="GitManager.App.Dialogs.RecoveryWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="备份与恢复" Width="660" Height="520" MinWidth="480" MinHeight="350" WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Border Background="White" Padding="18"><Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <StackPanel Margin="0,0,0,12"><TextBlock Text="备份与恢复" FontSize="21" FontWeight="SemiBold" /><TextBlock Text="操作前的本地历史、未提交改动和被覆盖的远程版本在此保留。恢复只修改本地分支。" TextWrapping="Wrap" Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}" /></StackPanel>
+        <TextBlock Grid.Row="1" Text="{Binding Error}" Foreground="#C04444" TextWrapping="Wrap" Margin="0,0,0,8" Visibility="{Binding HasError, Converter={StaticResource BoolVisibility}}" />
+        <ListBox Grid.Row="2" x:Name="RecoveryList" ItemsSource="{Binding RecoveryPoints}" BorderThickness="1" BorderBrush="{StaticResource BorderBrush}">
+            <ListBox.ItemTemplate><DataTemplate><StackPanel Margin="10,8"><TextBlock Text="{Binding Reason}" FontWeight="SemiBold" /><TextBlock Text="{Binding Branch}" Margin="0,4,0,3" /><TextBlock Text="{Binding Date.LocalDateTime, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Foreground="{StaticResource MutedBrush}" FontSize="11" /><TextBlock Text="{Binding Head}" Foreground="{StaticResource MutedBrush}" FontSize="10.5" FontFamily="Consolas" TextTrimming="CharacterEllipsis" /></StackPanel></DataTemplate></ListBox.ItemTemplate>
+        </ListBox>
+        <Button Grid.Row="3" Content="恢复所选备份…" Click="Restore_Click" HorizontalAlignment="Right" Margin="0,12,0,0" IsEnabled="{Binding CanStartOperation}" Style="{StaticResource PrimaryButton}" />
+    </Grid></Border>
+</Window>

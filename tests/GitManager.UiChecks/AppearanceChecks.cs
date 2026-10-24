@@ -97,6 +97,13 @@ internal static class AppearanceChecks
         try
         {
             host.Show();
+            view.Document = DiffParser.Parse("@@ -127,2 +127,7 @@\n context before\n+    raise HTTPException(\n+\n+        status_code=404,\n+\n+    )\n context after\n");
+            await capture(host, Path.Combine(output, "diff-blank-lines.png"));
+            var blankRows = view.Document.Pairs.Select((pair, index) => (pair, index))
+                .Where(item => item.pair.Right is { Kind: DiffKind.Addition, Text.Length: 0 }).Select(item => item.index).ToArray();
+            Assert(blankRows.Length == 2, "Blank-line regression needs consecutive added code and blank rows.");
+            foreach (var row in blankRows)
+                Assert(GutterInk(view, row) >= 12, "A blank added line lost its line number or drew it above its own row.");
             var oldLong = "public string Message = \"" + string.Concat(Enumerable.Repeat("完整的旧版内容 OldValue_12345，", 12)) + "\";";
             var newLong = "return \"" + string.Concat(Enumerable.Repeat("新的内容与 Unicode 😀 NewValue_98765，", 11)) + "\";";
             var patch = $"diff --git a/code.cs b/code.cs\n--- a/code.cs\n+++ b/code.cs\n@@ -1,4 +1,4 @@\n-{oldLong}\n+short replacement\n unchanged middle\n-old short\n+{newLong}\n after wrapped rows\n";
@@ -158,6 +165,7 @@ internal static class AppearanceChecks
             Assert(view.CachedTextCount < 100 && VisualTreeHelper.GetChildrenCount(view) == 0, "Wrapped Diff should retain only visible text layouts.");
             Console.WriteLine($"PASS split/unified wrapping, Unicode, unbroken long lines, original selection text, viewport reflow and 12,000-row drawing ({timer.Elapsed.TotalSeconds:F2}s).");
             Console.WriteLine("PASS capsule scrollbar dimensions, paging and thumb dragging.");
+            Console.WriteLine("PASS blank added lines keep their line numbers inside the corresponding Diff row.");
         }
         finally { host.Close(); }
     }
@@ -203,6 +211,19 @@ internal static class AppearanceChecks
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var file = File.Create(path);
         encoder.Save(file);
+    }
+    private static int GutterInk(DiffView view, int row)
+    {
+        // Check real rendered number glyphs, including the formerly empty-text baseline case.
+        var bitmap = new RenderTargetBitmap((int)Math.Ceiling(view.ActualWidth), (int)Math.Ceiling(view.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(view);
+        var region = new Int32Rect((int)(view.ActualWidth / 2) + 8, row * 23 + 4, 34, 17);
+        var pixels = new byte[region.Width * region.Height * 4];
+        bitmap.CopyPixels(region, pixels, region.Width * 4, 0);
+        var ink = 0;
+        for (var offset = 0; offset < pixels.Length; offset += 4)
+            if (pixels[offset + 2] < 180 && pixels[offset + 1] < 200 && pixels[offset] < 205) ink++;
+        return ink;
     }
     private static void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
 }
