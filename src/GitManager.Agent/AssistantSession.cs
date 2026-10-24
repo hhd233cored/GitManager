@@ -22,7 +22,7 @@ public sealed class AssistantSession(RepositoryTools tools)
         用户请求同步、变基、重置或撤销时，读取状态并生成合适的 create_operation_plan，再用 apply_operation_plan 请求界面审批。
         apply_operation_plan 返回 awaiting_approval 时必须明确告知等待用户在 GitManager 中查看预览和执行，不能声称操作已完成。
         以本地/远程为准会替换一端的历史，解释影响，不能自行把“同步”理解为覆盖。
-        生成提交说明时只依据本次勾选文件；先读取这些文件的 Diff，再调用 propose_commit_message，Summary 一行，Description 简洁列出实际变更。
+        生成提交说明时只依据本次勾选文件；先读取这些文件的 Diff，再调用 propose_commit_message，Summary 一行，Description 简洁列出实际变更（不能超过800字）。
         提交草稿只供用户填入提交区；你不能创建 Git 提交。指出截断、排除或未读取的文件，不编造测试结果。
         """;
 
