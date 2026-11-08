@@ -20,7 +20,15 @@
                         <ItemsControl.ItemTemplate><DataTemplate>
                             <StackPanel Margin="0,7,0,12">
                                 <TextBlock Text="{Binding Label}" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,5" />
-                                <controls:MarkdownView Markdown="{Binding Text}" FontSize="11.5" />
+                                <Expander Header="读取与检索记录" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,5">
+                                    <Expander.Style><Style TargetType="Expander"><Setter Property="Visibility" Value="Visible" />
+                                        <Style.Triggers><DataTrigger Binding="{Binding ToolSteps.Count}" Value="0"><Setter Property="Visibility" Value="Collapsed" /></DataTrigger></Style.Triggers>
+                                    </Style></Expander.Style>
+                                    <ItemsControl ItemsSource="{Binding ToolSteps}"><ItemsControl.ItemTemplate><DataTemplate>
+                                        <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,3" />
+                                    </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                                </Expander>
+                                <controls:MarkdownView Markdown="{Binding Text}" FontSize="11.5" SourceRequested="Source_Requested" />
                             </StackPanel>
                         </DataTemplate></ItemsControl.ItemTemplate>
                     </ItemsControl>

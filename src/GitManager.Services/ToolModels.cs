@@ -6,7 +6,8 @@ namespace GitManager.Services;
 public sealed record RepositoryContext(string Id, string Path, string Name, string Branch = "");
 public sealed record ToolCall(string Method, string RepositoryId = "", string? FilePath = null, string? CommitId = null,
     int Limit = 20, int Skip = 0, bool RefreshRemote = false, bool Staged = false,
-    string? Action = null, string? Target = null, string? PlanId = null, int Mainline = 0);
+    string? Action = null, string? Target = null, string? PlanId = null, int Mainline = 0,
+    int StartLine = 1, int EndLine = 200, string? Query = null, bool MatchCase = false, int Depth = 2);
 public sealed record ToolResponse(string? Result = null, string? Error = null);
 public sealed record OperationPlan(string Id, string RepositoryId, string Action, OperationPreview Preview, string Fingerprint,
     int Mainline, DateTimeOffset Created, string Status = "preview", string? Result = null)

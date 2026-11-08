@@ -90,7 +90,13 @@ internal static class AssistantChecks
         var dialog = new AssistantSettingsWindow(window, settingsVm);
         dialog.Show(); await Task.Delay(80);
         Assert(Descendants(dialog).OfType<PasswordBox>().Count() == 1, "Credential editor must mask API key.");
+        Assert(Descendants(dialog).OfType<CheckBox>().Any(box => box.Name == "AssistantIncludeProject")
+            && Descendants(dialog).OfType<TextBox>().Any(box => box.Name == "AssistantExcludedPaths"), "Project content settings missing.");
+        await render(window, Path.Combine(output, "assistant-reading-trace.png"));
         dialog.Close();
+        settingsVm.SaveOptions(settingsVm.Options with { IncludeDiff = false, ExcludedPaths = "private\n*.local.json" }, null, false);
+        Assert(!vm.RepositoryTools.ContentPolicy.AllowDiff && !vm.RepositoryTools.ContentPolicy.AllowProject, "Settings did not revoke shared service content access");
+        Assert(settings.Load().ExcludedPaths.Contains("private"), "Excluded paths did not persist");
         Console.WriteLine("PASS assistant drawer, narrow layout, tool-generated draft, explicit fill, selection invalidation, repository cancellation and private settings");
     }
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)

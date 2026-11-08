@@ -14,6 +14,8 @@ public sealed class AssistantSettingsWindow : Window
     private readonly PasswordBox _key;
     private readonly CheckBox _deleteKey;
     private readonly CheckBox _includeDiff;
+    private readonly CheckBox _includeProject;
+    private readonly TextBox _excludedPaths;
     private readonly CheckBox _streaming;
     private readonly CheckBox _mcp;
     private readonly TextBlock _status;
@@ -34,9 +36,15 @@ public sealed class AssistantSettingsWindow : Window
         panel.Children.Add(_key);
         panel.Children.Add(Note("密钥存放在 Windows 凭据管理器，按服务地址分别保存。留空保留该地址已保存的密钥；本机服务可不填。"));
         _deleteKey = new CheckBox { Content = "清除该服务已保存的密钥", Margin = new Thickness(0, 5, 0, 8) };
-        _includeDiff = new CheckBox { Name = "AssistantIncludeDiff", Content = "允许将所选文件的 Diff 发往上述模型服务", IsChecked = viewModel.Options.IncludeDiff, Margin = new Thickness(0, 7, 0, 7) };
+        _includeDiff = new CheckBox { Name = "AssistantIncludeDiff", Content = "允许共享仓库内容（Diff、源码及搜索片段）", IsChecked = viewModel.Options.IncludeDiff, Margin = new Thickness(0, 7, 0, 7) };
+        _includeProject = new CheckBox { Name = "AssistantIncludeProject", Content = "启用项目概况、文件浏览、源码阅读与代码搜索", IsChecked = viewModel.Options.IncludeRepositoryContent, Margin = new Thickness(0, 0, 0, 7) };
+        _excludedPaths = new TextBox { Name = "AssistantExcludedPaths", Text = viewModel.Options.ExcludedPaths, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+            Height = 56, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxLength = 8000 };
         _streaming = new CheckBox { Content = "流式显示回答（服务不支持时可关闭）", IsChecked = viewModel.Options.UseStreaming, Margin = new Thickness(0, 0, 0, 10) };
-        panel.Children.Add(_deleteKey); panel.Children.Add(_includeDiff); panel.Children.Add(_streaming);
+        panel.Children.Add(_deleteKey); panel.Children.Add(_includeDiff); panel.Children.Add(_includeProject);
+        panel.Children.Add(Note("读取的内容会发给所选模型服务；启用 MCP 时也受这些设置约束。默认排除常见密钥、链接、依赖与构建目录。"));
+        panel.Children.Add(Note("额外排除路径：每行一个仓库相对路径、目录或 * 通配模式，例如 private、*.local.json。对 Diff、项目阅读和 MCP 同时生效。"));
+        panel.Children.Add(_excludedPaths); panel.Children.Add(_streaming);
         panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
         _mcp = new CheckBox { Name = "AssistantEnableMcp", Content = "启用本机 MCP，开放当前选中的仓库", IsChecked = viewModel.Options.EnableMcp, Margin = new Thickness(0, 0, 0, 8) };
         panel.Children.Add(_mcp);
@@ -64,7 +72,8 @@ public sealed class AssistantSettingsWindow : Window
         Closed += (_, _) => { _closed.Cancel(); _closed.Dispose(); };
     }
     private AssistantOptions CurrentOptions() => new(_url.Text.Trim(), _model.Text.Trim(), _includeDiff.IsChecked == true,
-        _mcp.IsChecked == true, _streaming.IsChecked == true, _viewModel.Options.MaxOutputTokens);
+        _mcp.IsChecked == true, _streaming.IsChecked == true, _viewModel.Options.MaxOutputTokens,
+        _includeProject.IsChecked == true, _excludedPaths.Text);
     private async void TestConnection(object sender, RoutedEventArgs args)
     {
         var button = (Button)sender;

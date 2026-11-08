@@ -8,6 +8,8 @@ using GitManager.App;
 using GitManager.App.Controls;
 using GitManager.App.ViewModels;
 using GitManager.Core;
+using System.Text.Json;
+using System.Windows.Navigation;
 
 internal static class ChatPresentationChecks
 {
@@ -16,6 +18,8 @@ internal static class ChatPresentationChecks
         var original = window.ViewModel.Repository!.Path;
         var assistant = window.Assistant;
         assistant.IsOpen = true;
+        using var source = JsonDocument.Parse(await assistant.RepositoryTools.InvokeAsync(new("read_file", assistant.RepositoryTools.Context!.Id, "README.md", EndLine: 20)));
+        var sourceLink = source.RootElement.GetProperty("citation").GetString()!;
         var message = new AssistantMessage("助手", """
             ## 同步建议
 
@@ -47,7 +51,9 @@ internal static class ChatPresentationChecks
             ![示例图片](https://example.test/tracker.png)
 
             <script>这只是文本</script>
-            """);
+            """ + $"\n\n[README.md:1]({sourceLink})");
+        message.ToolSteps.Add("查看项目概况");
+        message.ToolSteps.Add("读取源码 · README.md");
         assistant.Messages.Add(message);
         await Task.Delay(250); window.UpdateLayout();
         var panel = (AssistantPane)window.FindName("AssistantPanel");
@@ -59,13 +65,31 @@ internal static class ChatPresentationChecks
         Assert(view.Document.Blocks.OfType<System.Windows.Documents.List>().Count() == 2 && view.Document.Blocks.OfType<Table>().Count() == 1, "Missing list/table blocks.");
         Assert(text.Contains("☑") && text.Contains("☐") && text.Contains("git status --short"), "Missing task markers or fenced code.");
         var links = Logical(view.Document).OfType<Hyperlink>().ToArray();
-        Assert(links.Length == 1 && links[0].NavigateUri.Scheme == "https", "Unsafe navigation or missing web link.");
+        Assert(links.Length == 2 && links.Count(link => link.NavigateUri.Scheme == "https") == 1
+            && links.Count(link => link.NavigateUri.Scheme == "gitmanager-source") == 1, "Unsafe navigation or missing source/web link.");
         Assert(!MarkdownView.TryWebUri("file:///C:/private.txt", out _) && !MarkdownView.TryWebUri("javascript:alert(1)", out _), "Unsafe URI accepted.");
         Assert(!Descendants(view).OfType<Image>().Any() && text.Contains("<script>"), "HTML/images must not be executed or loaded.");
         view.SelectAll();
         Assert(view.Selection.Text.Contains("git fetch origin") && !view.Selection.Text.Contains("```"), "Rendered text cannot be selected/copied.");
         view.Selection.Select(view.Document.ContentStart, view.Document.ContentStart);
         await capture(window, Path.Combine(output, "assistant-markdown.png"));
+
+        var sourceHyperlink = links.Single(link => link.NavigateUri.Scheme == "gitmanager-source");
+        sourceHyperlink.RaiseEvent(new RequestNavigateEventArgs(sourceHyperlink.NavigateUri, "") { RoutedEvent = Hyperlink.RequestNavigateEvent });
+        Window? preview = null;
+        for (var attempt = 0; attempt < 100 && preview is null; attempt++)
+        {
+            await Task.Delay(25);
+            preview = Application.Current.Windows.OfType<Window>().FirstOrDefault(candidate => candidate.Title.StartsWith("源码引用"));
+        }
+        Assert(preview is not null, "Source citation did not open an in-app preview.");
+        Assert(Descendants(preview!).OfType<TextBox>().Any(box => box.IsReadOnly && box.Text.Contains("1  ")), "Source preview lacks read-only numbered text.");
+        await capture(preview!, Path.Combine(output, "assistant-source-preview.png"));
+        preview!.Close();
+        var steps = Descendants(panel).OfType<Expander>().Single(expander => expander.Header?.ToString() == "读取与检索记录");
+        steps.IsExpanded = true; window.UpdateLayout();
+        Assert(Descendants(steps).OfType<TextBlock>().Any(block => block.Text.Contains("读取源码")), "Tool reading trace missing.");
+        await capture(window, Path.Combine(output, "assistant-project-reading.png"));
 
         message.Text = "生成中的代码：\n\n```text\n" + new string('a', 1600);
         await Task.Delay(200); window.Width = 1080; window.UpdateLayout();
@@ -77,7 +101,7 @@ internal static class ChatPresentationChecks
         Assert(end.Y > start.Y + 50 && end.Right <= view.ActualWidth + 2, "Long code must wrap to the available width.");
         Assert(view.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled, "Markdown has a horizontal scrollbar.");
         message.Text += "\n```\n\n**流式回答已完成**";
-        await Task.Delay(200);
+        for (var attempt = 0; attempt < 100 && !new TextRange(view.Document.ContentStart, view.Document.ContentEnd).Text.Contains("流式回答已完成"); attempt++) await Task.Delay(25);
         Assert(new TextRange(view.Document.ContentStart, view.Document.ContentEnd).Text.Contains("流式回答已完成"), "Streaming Markdown did not update.");
         var scroll = (ScrollViewer)panel.FindName("ConversationScroll");
         scroll.ScrollToTop(); window.UpdateLayout();

@@ -21,6 +21,7 @@ namespace GitManager.App.Controls;
 // Render the parsed Markdown tree directly: message text never becomes executable HTML or XAML.
 public sealed class MarkdownView : RichTextBox
 {
+    public event EventHandler<SourceNavigationEventArgs>? SourceRequested;
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder().UsePipeTables().UseTaskLists()
         .UseEmphasisExtras(EmphasisExtraOptions.Strikethrough).DisableHtml().Build();
     private static readonly FontFamily CodeFont = new("Cascadia Mono, Consolas");
@@ -83,7 +84,7 @@ public sealed class MarkdownView : RichTextBox
         base.OnPreviewMouseWheel(args);
     }
 
-    private static void AddBlock(BlockCollection target, Markdig.Syntax.Block block)
+    private void AddBlock(BlockCollection target, Markdig.Syntax.Block block)
     {
         switch (block)
         {
@@ -129,13 +130,13 @@ public sealed class MarkdownView : RichTextBox
         }
     }
 
-    private static Paragraph Paragraph(ContainerInline? content)
+    private Paragraph Paragraph(ContainerInline? content)
     {
         var paragraph = new Paragraph { Margin = new Thickness(0, 0, 0, 7) };
         if (content is not null) AddInlines(paragraph.Inlines, content);
         return paragraph;
     }
-    private static void AddInlines(InlineCollection target, ContainerInline source)
+    private void AddInlines(InlineCollection target, ContainerInline source)
     {
         foreach (var inline in source)
             switch (inline)
@@ -159,7 +160,7 @@ public sealed class MarkdownView : RichTextBox
                         var imageLabel = new Span(new Run("[图片] ")) { Foreground = Brush("#57606A") };
                         AddInlines(imageLabel.Inlines, link); target.Add(imageLabel);
                     }
-                    else if (TryWebUri(link.Url, out var uri))
+                    else if (TryWebUri(link.Url, out var uri) || TrySourceUri(link.Url, out uri))
                     {
                         var hyperlink = Hyperlink(uri!); AddInlines(hyperlink.Inlines, link); target.Add(hyperlink);
                     }
@@ -174,7 +175,7 @@ public sealed class MarkdownView : RichTextBox
                 case ContainerInline container: AddInlines(target, container); break;
             }
     }
-    private static Table RenderTable(MarkdownTable source)
+    private Table RenderTable(MarkdownTable source)
     {
         var table = new Table { CellSpacing = 0, BorderBrush = BorderColor, BorderThickness = new Thickness(1), Margin = new Thickness(0, 5, 0, 9) };
         var columns = Math.Max(1, source.ColumnDefinitions.Count);
@@ -197,13 +198,16 @@ public sealed class MarkdownView : RichTextBox
     }
     internal static bool TryWebUri(string? value, out Uri? uri) => Uri.TryCreate(value, UriKind.Absolute, out uri)
         && uri.Scheme is "http" or "https" && uri.UserInfo.Length == 0;
-    private static Hyperlink Hyperlink(Uri uri, string? label = null)
+    internal static bool TrySourceUri(string? value, out Uri? uri) => Uri.TryCreate(value, UriKind.Absolute, out uri)
+        && uri.Scheme == "gitmanager-source" && uri.Host.Length == 32 && uri.Host.All(Uri.IsHexDigit) && uri.UserInfo.Length == 0;
+    private Hyperlink Hyperlink(Uri uri, string? label = null)
     {
         var link = new Hyperlink { NavigateUri = uri, Foreground = Brush("#0969DA"), ToolTip = uri.AbsoluteUri };
         if (label is not null) link.Inlines.Add(new Run(label));
         link.RequestNavigate += (sender, args) =>
         {
             args.Handled = true;
+            if (TrySourceUri(args.Uri.AbsoluteUri, out _)) { SourceRequested?.Invoke(this, new(args.Uri)); return; }
             if (!TryWebUri(args.Uri.AbsoluteUri, out _)) return;
             try { Process.Start(new ProcessStartInfo(args.Uri.AbsoluteUri) { UseShellExecute = true }); }
             catch (Exception error) when (error is Win32Exception or InvalidOperationException) { }
@@ -214,4 +218,9 @@ public sealed class MarkdownView : RichTextBox
     {
         var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(value)); brush.Freeze(); return brush;
     }
+}
+
+public sealed class SourceNavigationEventArgs(Uri uri) : EventArgs
+{
+    public Uri Uri { get; } = uri;
 }

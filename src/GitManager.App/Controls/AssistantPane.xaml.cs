@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using GitManager.App.ViewModels;
+using GitManager.App.Dialogs;
 using GitManager.Services;
 
 namespace GitManager.App.Controls;
@@ -42,5 +43,11 @@ public partial class AssistantPane : UserControl
     private void DeclinePlan_Click(object sender, RoutedEventArgs args)
     {
         if (sender is Button { DataContext: AssistantPlanItem item } && DataContext is AssistantViewModel vm) vm.DeclinePlan(item.Plan);
+    }
+    private async void Source_Requested(object? sender, SourceNavigationEventArgs args)
+    {
+        if (DataContext is not AssistantViewModel vm) return;
+        try { await SourcePreviewWindow.ShowAsync(Window.GetWindow(this), vm.RepositoryTools, args.Uri); }
+        catch (Exception ex) { MessageBox.Show(Window.GetWindow(this), ToolErrors.Message(ex), "无法打开源码引用", MessageBoxButton.OK, MessageBoxImage.Information); }
     }
 }

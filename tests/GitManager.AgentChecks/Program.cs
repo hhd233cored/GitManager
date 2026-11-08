@@ -109,6 +109,15 @@ await Check("Streaming compatible model performs tools and emits text", async ()
         new(context, AssistantTask.CommitDraft, "生成草稿", ["sample.txt"]));
     Assert(result.Text.Contains("草稿") && result.Draft is not null && endpoint.ReceivedDiff, "Streaming tool loop failed");
 });
+await Check("Natural chat commit drafts retain a valid workspace snapshot", async () =>
+{
+    await using var endpoint = new MockModel(streaming: false);
+    var options = new AssistantOptions(endpoint.BaseUrl, "offline-test-model", UseStreaming: false);
+    using var model = AssistantClientFactory.Create(options, "offline-test-key");
+    var result = await new AssistantSession(tools).RunAsync(model, options,
+        new(context, AssistantTask.Chat, "为勾选文件生成提交说明", ["sample.txt"]));
+    Assert(result.Draft is not null && result.Draft.Fingerprint == await tools.CaptureFingerprintAsync(context.Id), "Chat draft snapshot missing");
+});
 await Check("Content sharing can be disabled without disabling metadata tools", async () =>
 {
     await using var endpoint = new MockModel(streaming: false);
@@ -147,16 +156,24 @@ await Check("Official MCP client discovers tools and calls real stdio server thr
     await using var client = await McpClient.CreateAsync(transport);
     var available = await client.ListToolsAsync();
     Assert(available.Any(tool => tool.Name == "get_diff") && available.Any(tool => tool.Name == "apply_operation_plan"), "Missing tools");
+    foreach (var name in new[] { "get_project_overview", "list_files", "read_file", "search_code" }) Assert(available.Any(tool => tool.Name == name), "Missing project tool: " + name);
     var active = await client.CallToolAsync("get_active_repository", new Dictionary<string, object?>());
     Assert(ToolJson.Serialize(active).Contains(context.Id), "MCP wrong active repository");
     var status = await client.CallToolAsync("get_repository_status", new Dictionary<string, object?> { ["repositoryId"] = context.Id });
     Assert(!status.IsError.GetValueOrDefault(), "MCP status failed");
+    var source = await client.CallToolAsync("read_file", new Dictionary<string, object?> { ["repositoryId"] = context.Id, ["filePath"] = "sample.txt", ["startLine"] = 1, ["endLine"] = 2 });
+    Assert(!source.IsError.GetValueOrDefault() && ToolJson.Serialize(source).Contains("working_tree"), "MCP source read failed");
+    tools.SetContentPolicy(new(false, false));
+    var denied = await client.CallToolAsync("read_file", new Dictionary<string, object?> { ["repositoryId"] = context.Id, ["filePath"] = "sample.txt" });
+    Assert(denied.IsError == true, "MCP ignored content revocation");
+    tools.SetContentPolicy(new());
     var invalid = await client.CallToolAsync("get_diff", new Dictionary<string, object?> { ["repositoryId"] = context.Id, ["filePath"] = "../outside" });
     Assert(invalid.IsError == true, "MCP did not reject traversal");
     tools.SetRepository(null);
     var revoked = await client.CallToolAsync("get_repository_status", new Dictionary<string, object?> { ["repositoryId"] = context.Id });
     Assert(revoked.IsError == true, "MCP scope revocation failed");
 });
+await ProjectReadingChecks.RunAsync(root, Check);
 Console.WriteLine($"\n{passed} passed, {failures.Count} failed. Fixtures: {root}");
 foreach (var failure in failures) Console.Error.WriteLine(failure);
 return failures.Count == 0 ? 0 : 1;

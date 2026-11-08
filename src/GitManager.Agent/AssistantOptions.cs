@@ -5,7 +5,8 @@ using System.ClientModel;
 namespace GitManager.Agent;
 
 public sealed record AssistantOptions(string BaseUrl = "https://api.openai.com/v1", string Model = "", bool IncludeDiff = true,
-    bool EnableMcp = false, bool UseStreaming = true, int MaxOutputTokens = 2000)
+    bool EnableMcp = false, bool UseStreaming = true, int MaxOutputTokens = 2000,
+    bool IncludeRepositoryContent = true, string ExcludedPaths = "")
 {
     public Uri Endpoint
     {
@@ -22,6 +23,11 @@ public sealed record AssistantOptions(string BaseUrl = "https://api.openai.com/v
     {
         _ = Endpoint;
         if (string.IsNullOrWhiteSpace(Model) || Model.Length > 200) throw new ArgumentException("请填写模型名称。");
+        ValidateContentAccess();
+    }
+    public void ValidateContentAccess()
+    {
+        if (ExcludedPaths is null || ExcludedPaths.Length > 8000) throw new ArgumentException("排除路径应为不超过 8000 字符的文本。");
     }
 }
 

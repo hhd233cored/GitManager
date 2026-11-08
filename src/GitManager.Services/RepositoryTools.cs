@@ -7,11 +7,19 @@ namespace GitManager.Services;
 public sealed class RepositoryTools(GitService git, RepositoryCoordinator coordinator, string? auditPath = null)
 {
     private RepositoryContext? _context;
+    private RepositoryContentPolicy _contentPolicy = new();
+    private readonly ProjectReader _projectReader = new(auditPath is null ? null : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(auditPath))!, "project-cache"));
     private readonly object _plansLock = new();
     private readonly Dictionary<string, OperationPlan> _plans = [];
     public RepositoryContext? Context => Volatile.Read(ref _context);
     public event Action<OperationPlan>? PlanChanged;
     public event Action<string, bool>? RepositoryUpdated;
+    public RepositoryContentPolicy ContentPolicy => Volatile.Read(ref _contentPolicy);
+    public void SetContentPolicy(RepositoryContentPolicy policy)
+    {
+        if (policy.ExcludedPaths.Length > 8000) throw new ArgumentException("排除路径过长，请限制在 8000 字符以内。");
+        if (ContentPolicy != policy) { Volatile.Write(ref _contentPolicy, policy); _projectReader.Invalidate(); }
+    }
 
     public void SetRepository(string? path, string branch = "")
     {
@@ -20,6 +28,7 @@ public sealed class RepositoryTools(GitService git, RepositoryCoordinator coordi
         if (string.Equals(previous?.Path, path, StringComparison.OrdinalIgnoreCase) && previous?.Branch == branch) return;
         // An opaque selection ID prevents a running conversation from silently retargeting another repository.
         Volatile.Write(ref _context, path is null ? null : new RepositoryContext(Guid.NewGuid().ToString("N"), path, Path.GetFileName(path), branch));
+        _projectReader.Invalidate();
     }
 
     public RepositoryContext RequireContext(string id)
@@ -35,8 +44,25 @@ public sealed class RepositoryTools(GitService git, RepositoryCoordinator coordi
         return await git.GetWorkspaceFingerprintAsync(RequireContext(repositoryId).Path, ct);
     }
 
-    public async Task<string> InvokeAsync(ToolCall call, CancellationToken ct = default)
+    public Task<string> InvokeAsync(ToolCall call, CancellationToken ct = default) => InvokeAsync(call, null, ct);
+
+    public async Task<string> InvokeAsync(ToolCall call, RepositoryContentPolicy? requestPolicy, CancellationToken ct = default)
     {
+        // Capture selection under the shared gate, but do not hold the UI's Git queue during long reads.
+        if (ProjectReader.IsTool(call.Method))
+        {
+            RepositoryContext captured;
+            RepositoryContentPolicy capturedPolicy;
+            using (var selection = await coordinator.EnterAsync(cancellationToken: ct))
+            {
+                captured = RequireContext(call.RepositoryId);
+                capturedPolicy = ContentPolicy;
+            }
+            var result = await _projectReader.InvokeAsync(captured, EffectivePolicy(capturedPolicy, requestPolicy), call, ct).ConfigureAwait(false);
+            RequireContext(captured.Id);
+            if (!ReferenceEquals(ContentPolicy, capturedPolicy)) throw new InvalidOperationException("内容访问设置已变化，请重新查询。");
+            return result;
+        }
         using var lease = await coordinator.EnterAsync(cancellationToken: ct);
         if (call.Method == "get_active_repository") return ToolJson.Serialize(Context);
         var context = RequireContext(call.RepositoryId);
@@ -60,7 +86,11 @@ public sealed class RepositoryTools(GitService git, RepositoryCoordinator coordi
                 return ToolJson.Serialize(new { commit = DescribeCommit(commit), stats = await git.GetCommitStatsAsync(path, commit, ct),
                     files = files.Take(200).Select(file => new { file.Path, type = file.Status.ToString() }), truncated = files.Count > 200 });
             case "get_diff":
-                return await ReadDiffAsync(path, call, ct);
+                var policy = ContentPolicy;
+                var diff = await ReadDiffAsync(path, call, EffectivePolicy(policy, requestPolicy), ct);
+                RequireContext(context.Id);
+                if (!ReferenceEquals(ContentPolicy, policy)) throw new InvalidOperationException("内容访问设置已变化，请重新查询。");
+                return diff;
             case "get_sync_analysis":
                 return await AnalyzeSyncAsync(context, call.RefreshRemote, ct);
             case "create_operation_plan":
@@ -73,6 +103,9 @@ public sealed class RepositoryTools(GitService git, RepositoryCoordinator coordi
         }
     }
 
+    private static RepositoryContentPolicy EffectivePolicy(RepositoryContentPolicy global, RepositoryContentPolicy? request) => request is null ? global :
+        new(global.AllowDiff && request.AllowDiff, global.AllowProject && request.AllowProject, global.ExcludedPaths + "\n" + request.ExcludedPaths);
+
     private static object DescribeCommit(CommitInfo commit) => new { commit.Id, commit.Parents, commit.Author, commit.Date,
         subject = Clip(commit.Subject, 500), body = Clip(commit.Body, 1500) };
     public static string Clip(string text, int maximum) => text.Length <= maximum ? text : text[..maximum] + "\n[内容已截断]";
@@ -82,14 +115,15 @@ public sealed class RepositoryTools(GitService git, RepositoryCoordinator coordi
         return await git.GetHistoryByIdAsync(path, id, ct);
     }
 
-    private async Task<string> ReadDiffAsync(string path, ToolCall call, CancellationToken ct)
+    private async Task<string> ReadDiffAsync(string path, ToolCall call, RepositoryContentPolicy policy, CancellationToken ct)
     {
+        if (!policy.AllowDiff) throw new InvalidOperationException("Diff 内容共享已关闭。");
         var relative = NormalizeFilePath(call.FilePath);
-        if (IsSensitivePath(relative)) throw new InvalidOperationException("该路径可能包含密钥或本机配置，助手不读取其文件内容。");
+        if (policy.Excludes(relative)) throw new InvalidOperationException("该路径已被内容访问策略排除。");
         CommitInfo? commit = call.CommitId is null ? null : await ReadCommitAsync(path, call.CommitId, ct);
         var files = commit is null ? await git.GetStatusAsync(path, ct) : await git.GetCommitFilesAsync(path, commit, ct);
         var file = files.FirstOrDefault(file => file.Path == relative) ?? throw new ArgumentException("该文件不属于当前变更或指定提交。" );
-        if (IsSensitivePath(file.OldPath ?? relative)) throw new InvalidOperationException("重命名前的文件可能包含密钥，助手不读取其内容。");
+        if (policy.Excludes(file.OldPath ?? relative)) throw new InvalidOperationException("重命名前的路径已被内容访问策略排除。");
         if (commit is null)
         {
             var absolute = Path.Combine(path, relative);

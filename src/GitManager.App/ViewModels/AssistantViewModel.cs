@@ -15,6 +15,7 @@ public sealed class AssistantMessage(string label, string text = "") : Observabl
     private string _text = text;
     public string Label { get; } = label;
     public string Text { get => _text; set => Set(ref _text, value); }
+    public ObservableCollection<string> ToolSteps { get; } = [];
 }
 public sealed record AssistantPlanItem(OperationPlan Plan)
 {
@@ -53,6 +54,7 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
         _settingsStore = store ?? new();
         _secrets = secrets ?? new WindowsAssistantSecretStore();
         _options = persist ? _settingsStore.Load() : new();
+        ApplyContentPolicy();
         SendCommand = new AsyncCommand(() => RunAsync(AssistantTask.Chat), () => CanRun && !string.IsNullOrWhiteSpace(Input));
         DraftCommand = new AsyncCommand(() => RunAsync(AssistantTask.CommitDraft), () => CanRun && _workspace.IncludedCount > 0);
         ExplainCommitCommand = new AsyncCommand(() => RunAsync(AssistantTask.ExplainCommit), () => CanRun && _workspace.SelectedCommit is not null);
@@ -92,6 +94,7 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
     public CommitDraft? Draft { get => _draft; private set { Set(ref _draft, value); Raise(nameof(HasDraft)); CommandManager.InvalidateRequerySuggested(); } }
     public bool HasDraft => Draft is not null;
     public AssistantOptions Options => _options;
+    public RepositoryTools RepositoryTools => _workspace.RepositoryTools;
     public string Scope => _workspace.RepositoryTools.Context is { } context ? context.Name + " · " + context.Branch : "请先打开一个仓库";
     public string ConnectionLabel => string.IsNullOrWhiteSpace(Options.Model) ? "尚未配置模型 · 打开设置连接" : Options.Model;
     public bool CanRun => !_disposed && !IsBusy && !_workspace.IsBusy && _workspace.HasRepository;
@@ -101,13 +104,20 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
     public void SaveOptions(AssistantOptions options, string? newSecret, bool deleteSecret)
     {
         _ = options.Endpoint;
+        options.ValidateContentAccess();
         if (!string.IsNullOrWhiteSpace(newSecret)) _secrets.Write(options.BaseUrl, newSecret.Trim());
         else if (deleteSecret) _secrets.Delete(options.BaseUrl);
         if (_persist) _settingsStore.Save(options);
         _options = options;
+        _cancellation?.Cancel();
+        _history.Clear();
+        Draft = null;
+        ApplyContentPolicy();
         Raise(nameof(Options)); Raise(nameof(ConnectionLabel));
         UpdateBridge();
     }
+    private void ApplyContentPolicy() => RepositoryTools.SetContentPolicy(new(Options.IncludeDiff,
+        Options.IncludeDiff && Options.IncludeRepositoryContent, Options.ExcludedPaths));
 
     public async Task RunAsync(AssistantTask task, string? prompt = null)
     {
@@ -147,7 +157,11 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
             {
                 if (_disposed || _repositoryId != context.Id || !acceptingProgress) return;
                 if (update.Kind == "text") message.Text += update.Text;
-                else Step = update.Text;
+                else
+                {
+                    Step = update.Text;
+                    if (message.ToolSteps.Count < 64) message.ToolSteps.Add(update.Text);
+                }
             });
             var result = await new AssistantSession(_workspace.RepositoryTools).RunAsync(model, Options, request, _history.ToArray(), progress, cancellation.Token);
             acceptingProgress = false;

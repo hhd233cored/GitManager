@@ -17,6 +17,21 @@ await builder.Build().RunAsync();
 [McpServerToolType]
 public sealed class GitTools(LocalToolBridgeClient bridge)
 {
+    [McpServerTool(Name = "get_project_overview", ReadOnly = true), Description("Read a static working-tree project overview, manifest and README excerpts with source citations. No build/configuration is executed. Subject to GitManager content-sharing and excluded-path settings.")]
+    public Task<string> Overview(string repositoryId, CancellationToken cancellationToken) => bridge.InvokeAsync(new("get_project_overview", repositoryId), cancellationToken);
+
+    [McpServerTool(Name = "list_files", ReadOnly = true), Description("Browse working-tree Git files, excluding credentials, links, dependencies, build outputs and user exclusions. Relative directory or empty root; depth 1-8, limit 1-200. Follow nextSkip.")]
+    public Task<string> Files(string repositoryId, CancellationToken cancellationToken, string? filePath = null, int depth = 2, int limit = 100, int skip = 0) =>
+        bridge.InvokeAsync(new("list_files", repositoryId, filePath, Limit: limit, Skip: skip, Depth: depth), cancellationToken);
+
+    [McpServerTool(Name = "read_file", ReadOnly = true), Description("Read working-tree text by 1-based line range, maximum 200 lines/16000 characters, file maximum 1MB. Returns hash, source citation, truncation and continuation. No arbitrary filesystem paths.")]
+    public Task<string> Read(string repositoryId, string filePath, CancellationToken cancellationToken, int startLine = 1, int endLine = 200) =>
+        bridge.InvokeAsync(new("read_file", repositoryId, filePath, StartLine: startLine, EndLine: endLine), cancellationToken);
+
+    [McpServerTool(Name = "search_code", ReadOnly = true), Description("Literal working-tree text search, not semantic references. Restrict filePath to a file/directory, or empty for root. Maximum 100 results/page. Follow nextSkip; narrow filePath when scanLimited. Returns source lines/hashes/citations.")]
+    public Task<string> Search(string repositoryId, string query, CancellationToken cancellationToken, string? filePath = null, int limit = 30, int skip = 0, bool matchCase = false) =>
+        bridge.InvokeAsync(new("search_code", repositoryId, filePath, Limit: limit, Skip: skip, Query: query, MatchCase: matchCase), cancellationToken);
+
     [McpServerTool(Name = "get_active_repository", ReadOnly = true), Description("Get the repository explicitly shared by the running GitManager application. Use its opaque ID for subsequent tools. No arbitrary filesystem paths are accepted.")]
     public Task<string> Active(CancellationToken cancellationToken) => bridge.InvokeAsync(new("get_active_repository"), cancellationToken);
 
