@@ -9,7 +9,7 @@
 3. 云端填写自己的 API Key，本机服务允许不填。密钥按规范化后的地址分别保存在 Windows 凭据管理器；更改地址不会把旧地址的密钥发送给新服务。清除密钥针对当前填写的地址。
 4. 连接测试发送一次简短请求，不能保证该模型的所有能力；首次使用时还应验证具体模型的工具调用。服务不支持流式响应时可关闭流式显示。
 5. “允许共享仓库内容”控制 Diff、源码、搜索片段与项目概况，内置助手和 MCP 同时受限；关闭后仍可读取 Git 状态及提交元数据。“启用项目概况、文件浏览、源码阅读与代码搜索”可单独关闭项目阅读，保留 Diff。额外排除路径每行一个相对文件、目录或 `*` / `?` 通配模式，对两种入口和 Diff 同时生效。内容返回给工具调用者后，可能会被发往其使用的模型服务。
-6. 对话只保留在本次应用会话中，切换仓库/分支停止旧分析并清空；修改助手设置取消当前分析并清空后续使用的模型历史。
+6. 助手自动保存已完成的问答。首次打开助手会显示最近的历史会话；空白会话的标题为“新会话”。将鼠标移到侧栏顶部的会话标题上，可以在侧栏内选择历史记录，也可以通过列表项右侧的按钮删除记录。切换仓库或分支会停止当前分析并开始新会话。修改助手设置会取消当前分析并重置模型的上下文。
 
 可直接在聊天中提出以下请求；文本支持 Markdown 格式、选择和复制：
 
@@ -40,6 +40,32 @@ WPF 界面 ───────────────────────
 - `GitManager.Agent`：模型适配、工具循环、上下文预算、流式输出及草稿。未来接入 LangChain/LangGraph 时可以沿用相同工具接口。
 - `GitManager.Mcp`：独立 stdio 进程，只桥接到运行中的 GitManager，不另起 Git 执行实例。日志写 stderr，stdout 保留给 MCP。
 - WPF：连接设置、Windows 凭据、可拉伸侧栏、计划审批、草稿填入及既有冲突窗口。
+
+## 本地对话数据库
+
+SQLite 文件位于 `%LOCALAPPDATA%\GitManager\chats.db`。第一次成功保存问答时会创建对应会话，取第一条提问的首行作为标题。每轮用同一事务更新会话时间并写入两条消息。历史按会话的最后更新时间排序，消息按 ID 顺序读取。会话时间以 UTC Unix 毫秒保存，界面显示本机时间。
+
+```mermaid
+erDiagram
+    CONVERSATIONS ||--|{ MESSAGES : "包含"
+    CONVERSATIONS {
+        TEXT id PK
+        TEXT repository_path
+        TEXT repository_name
+        TEXT branch
+        TEXT title
+        INTEGER created_at
+        INTEGER updated_at
+    }
+    MESSAGES {
+        INTEGER id PK
+        TEXT conversation_id FK
+        TEXT role "user 或 assistant"
+        TEXT content "问答正文，可含 Markdown"
+    }
+```
+
+每条消息通过 `messages.conversation_id` 关联一条会话。删除会话时，SQLite 会级联删除消息。历史会话在侧栏中以只读方式显示已完成的提问、最终回答及提交草稿文本，已取消的请求、原始工具结果和可执行计划留在当前运行中。历史里的源码引用显示为文字。API 地址、模型及偏好使用同目录的 `assistant.json`，API Key 使用 Windows 凭据管理器。
 
 ## 配置 MCP
 

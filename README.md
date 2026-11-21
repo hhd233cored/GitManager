@@ -72,11 +72,13 @@ Changes 上方的 Stash 与恢复按钮，或 Repository 菜单，可以打开 S
 
 输出到 `artifacts/app/GitManager.exe`，同时发布 `mcp/GitManager.Mcp.exe` 和 `mcp-config.json`。依赖 .NET 10 Windows Desktop Runtime。可用 `./publish.ps1 -OutputDirectory artifacts/app-assistant` 输出到独立目录。
 
-应用设置保存在 `%LOCALAPPDATA%\GitManager\settings.json`；助手设置单独保存在 `assistant.json`，密钥不写入这两个文件。
+应用设置保存在 `%LOCALAPPDATA%\GitManager\settings.json`。助手的 API 地址、模型及偏好保存在同目录下的 `assistant.json`，API Key 按服务地址存入 Windows 凭据管理器。
 
 ## Git 助手与 MCP
 
 点击右上角“助手”，在“设置”中填写 API 基础地址、模型名称和 API Key。模型需支持 Chat Completions 工具调用；本机地址可使用 HTTP，其余地址使用 HTTPS。连接测试会发送一次简短请求。
+
+完成的问答自动保存到 `%LOCALAPPDATA%\GitManager\chats.db`。将鼠标移到助手侧栏顶部的会话标题上，即可展开历史列表；选择一项可在侧栏内查看，列表显示每段会话的仓库和分支。点击“新建对话”可以开始另一段聊天。
 
 在聊天中要求生成提交说明、解释当前提交或 Diff、分析同步差异。提交草稿查看后点击“填入提交区”，仍由用户编辑和提交；历史右键也可要求解释提交。获取远程最新信息会先 Fetch，不会自动 Pull/Push。切换仓库或分支会停止旧分析并清除上下文；草稿填入前重新核对文件内容和勾选范围。
 

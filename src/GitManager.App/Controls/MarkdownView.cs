@@ -32,6 +32,9 @@ public sealed class MarkdownView : RichTextBox
     public static readonly DependencyProperty MarkdownProperty = DependencyProperty.Register(nameof(Markdown), typeof(string),
         typeof(MarkdownView), new FrameworkPropertyMetadata("", (owner, _) => ((MarkdownView)owner).QueueRender()));
     public string Markdown { get => (string)GetValue(MarkdownProperty); set => SetValue(MarkdownProperty, value); }
+    public static readonly DependencyProperty AllowSourceLinksProperty = DependencyProperty.Register(nameof(AllowSourceLinks), typeof(bool),
+        typeof(MarkdownView), new FrameworkPropertyMetadata(true, (owner, _) => ((MarkdownView)owner).QueueRender()));
+    public bool AllowSourceLinks { get => (bool)GetValue(AllowSourceLinksProperty); set => SetValue(AllowSourceLinksProperty, value); }
 
     public MarkdownView()
     {
@@ -160,7 +163,7 @@ public sealed class MarkdownView : RichTextBox
                         var imageLabel = new Span(new Run("[图片] ")) { Foreground = Brush("#57606A") };
                         AddInlines(imageLabel.Inlines, link); target.Add(imageLabel);
                     }
-                    else if (TryWebUri(link.Url, out var uri) || TrySourceUri(link.Url, out uri))
+                    else if (TryWebUri(link.Url, out var uri) || (AllowSourceLinks && SourceRequested is not null && TrySourceUri(link.Url, out uri)))
                     {
                         var hyperlink = Hyperlink(uri!); AddInlines(hyperlink.Inlines, link); target.Add(hyperlink);
                     }

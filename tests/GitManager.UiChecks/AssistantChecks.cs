@@ -74,7 +74,9 @@ internal static class AssistantChecks
 
         var settings = new AssistantSettingsStore(Path.Combine(output, "assistant-test-settings.json"));
         var secrets = new MemorySecrets();
-        using var settingsVm = new AssistantViewModel(vm, persist: true, store: settings, secrets: secrets);
+        var historyPath = Path.Combine(output, $"assistant-chats-{Guid.NewGuid():N}.db");
+        var conversations = new AssistantConversationStore(historyPath);
+        using var settingsVm = new AssistantViewModel(vm, persist: true, store: settings, secrets: secrets, conversations: conversations);
         settingsVm.SaveOptions(new("https://example.test/v1", "test-model"), "test-secret-never-serialize", false);
         Assert(!File.ReadAllText(Path.Combine(output, "assistant-test-settings.json")).Contains("test-secret"), "Credential stored in plain settings.");
         Assert(settingsVm.ReadSecret("https://other.example.test/v1") is null && settingsVm.ReadSecret("https://example.test/v1") == "test-secret-never-serialize", "Credentials not bound to endpoint.");
@@ -94,10 +96,89 @@ internal static class AssistantChecks
             && Descendants(dialog).OfType<TextBox>().Any(box => box.Name == "AssistantExcludedPaths"), "Project content settings missing.");
         await render(window, Path.Combine(output, "assistant-reading-trace.png"));
         dialog.Close();
-        settingsVm.SaveOptions(settingsVm.Options with { IncludeDiff = false, ExcludedPaths = "private\n*.local.json" }, null, false);
+        settingsVm.SaveOptions(settingsVm.Options with { IncludeDiff = false, UseStreaming = false, ExcludedPaths = "private\n*.local.json" }, null, false);
         Assert(!vm.RepositoryTools.ContentPolicy.AllowDiff && !vm.RepositoryTools.ContentPolicy.AllowProject, "Settings did not revoke shared service content access");
         Assert(settings.Load().ExcludedPaths.Contains("private"), "Excluded paths did not persist");
         Console.WriteLine("PASS assistant drawer, narrow layout, tool-generated draft, explicit fill, selection invalidation, repository cancellation and private settings");
+        await CheckSavedConversationsAsync(window, settingsVm, settings, secrets, historyPath, output, render);
+    }
+
+    private static async Task CheckSavedConversationsAsync(MainWindow window, AssistantViewModel assistant,
+        AssistantSettingsStore settings, MemorySecrets secrets, string historyPath, string output, Func<MainWindow, string, Task> render)
+    {
+        const string secret = "test-secret-never-serialize";
+        Assert(assistant.ConversationTitle == "新会话", "An empty conversation was given a history title.");
+        assistant.ClientFactory = (_, _) => new TextClient("**已检查** " + secret);
+        await assistant.RunAsync(AssistantTask.Chat, "第一次提问\n细节");
+        await assistant.RunAsync(AssistantTask.Chat, "继续检查 " + secret);
+        assistant.ClientFactory = (_, _) => new WaitingClient();
+        var cancelled = assistant.RunAsync(AssistantTask.Chat, "这轮会取消");
+        assistant.CancelCommand.Execute(null);
+        await cancelled;
+        assistant.NewConversationCommand.Execute(null);
+        Assert(assistant.ConversationTitle == "新会话", "A new conversation kept the previous title.");
+        assistant.ClientFactory = (_, _) => new TextClient("另一段回答");
+        await assistant.RunAsync(AssistantTask.Chat, "另一个话题");
+        Assert(assistant.Error.Length == 0, assistant.Error);
+
+        var reopened = new AssistantConversationStore(historyPath);
+        using var restarted = new AssistantViewModel(window.ViewModel, true, settings, secrets, reopened);
+        Assert(restarted.Options.Model == "test-model" && restarted.ReadSecret(restarted.Options.BaseUrl) == secret,
+            "The model configuration or saved API key was lost when the assistant was recreated.");
+        var sessions = reopened.List();
+        Assert(sessions.Count == 2 && sessions[0].Title == "另一个话题" && sessions[1].Title == "第一次提问",
+            "New conversations were not saved separately in most-recent order.");
+        var first = sessions[1];
+        var context = window.ViewModel.RepositoryTools.Context!;
+        Assert(first.RepositoryPath == context.Path && first.Branch == context.Branch, "Saved conversation lost its repository or branch.");
+        var transcript = reopened.Read(first.Id);
+        Assert(transcript.SequenceEqual(new AssistantTurn[] {
+            new("user", "第一次提问\n细节"), new("assistant", "**已检查** ***"),
+            new("user", "继续检查 ***"), new("assistant", "**已检查** ***") }),
+            "Saved messages lost their order or text, or included a cancelled turn or the configured API key.");
+
+        var pane = (AssistantPane)window.FindName("AssistantPanel");
+        window.Assistant.IsOpen = true;
+        pane.DataContext = restarted;
+        restarted.IsOpen = true;
+        try
+        {
+            var title = (Button)pane.FindName("AssistantHistoryButton");
+            var menu = (Border)pane.FindName("ConversationMenu");
+            var list = (ListBox)pane.FindName("ConversationList");
+            var messages = (ItemsControl)pane.FindName("ConversationMessages");
+            for (var attempt = 0; !restarted.IsViewingHistory && attempt < 100; attempt++) await Task.Delay(25);
+            Assert(Equals(title.Content, "另一个话题") && title.FontWeight == FontWeights.SemiBold && title.FontSize == 13
+                && title.Background == Brushes.Transparent && title.BorderThickness == new Thickness(0),
+                "The history title did not restore the latest conversation or retained button chrome.");
+            var windowCount = Application.Current.Windows.Count;
+            title.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseEnterEvent });
+            Assert(menu.IsVisible, "Hovering over the title did not open the list.");
+            title.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseLeaveEvent });
+            menu.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseEnterEvent });
+            await Task.Delay(240);
+            Assert(menu.IsVisible && list.Items.Count == 2, "The conversation list closed during the move from the title into it.");
+            await render(window, Path.Combine(output, "assistant-history-menu.png"));
+            window.UpdateLayout();
+            var entry = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(1);
+            var open = Descendants(entry).OfType<Button>().Single(button => button.Content is StackPanel);
+            open.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            for (var attempt = 0; messages.Items.Count != 4 && attempt < 100; attempt++) await Task.Delay(25);
+            Assert(!menu.IsVisible && Application.Current.Windows.Count == windowCount && Equals(title.Content, "第一次提问")
+                && messages.Items.Count == 4 && ((AssistantMessage)messages.Items[3]).Text == "**已检查** ***",
+                "Selecting a conversation did not open its transcript in the original sidebar.");
+            await restarted.DeleteConversationAsync(first);
+            Assert(!restarted.IsViewingHistory && restarted.ConversationTitle == "新会话", "Deleting the displayed conversation left its title visible.");
+        }
+        finally
+        {
+            pane.DataContext = window.Assistant;
+            window.Assistant.IsOpen = false;
+        }
+
+        Assert(reopened.List().Single().Id == sessions[0].Id && reopened.Read(first.Id).Count == 0,
+            "Deleting one conversation did not cascade to its messages or removed the wrong conversation.");
+        Console.WriteLine("PASS SQLite persistence, hover history, inline transcript, cancellation, credential redaction and cascading deletion");
     }
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {
@@ -135,6 +216,14 @@ internal static class AssistantChecks
     {
         public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         { await Task.Delay(Timeout.Infinite, cancellationToken); throw new InvalidOperationException(); }
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+    private sealed class TextClient(string answer) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+            => Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, answer)));
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
