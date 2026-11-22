@@ -15,6 +15,7 @@ public partial class AssistantPane : UserControl
     public event Action<OperationPlan>? ReviewRequested;
     private readonly DispatcherTimer _conversationMenuClose = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private int _conversationMenuRevision;
+    private bool _uploadingConversation;
     private bool _followEnd = true;
     public AssistantPane()
     {
@@ -89,6 +90,34 @@ public partial class AssistantPane : UserControl
         if (sender is not Button { DataContext: AssistantConversation conversation } || DataContext is not AssistantViewModel vm) return;
         CloseConversationMenu();
         await vm.ViewConversationAsync(conversation);
+    }
+
+    private async void BackupConversation_Click(object sender, RoutedEventArgs args)
+    {
+        if (_uploadingConversation || sender is not Button { DataContext: AssistantConversation conversation }
+            || DataContext is not AssistantViewModel vm) return;
+        if (vm.CloudAccount.Email is null)
+        {
+            SetConversationMenuStatus("请先在助手设置的「账号与备份」中登录。");
+            return;
+        }
+        var revision = _conversationMenuRevision;
+        _uploadingConversation = true;
+        SetConversationMenuStatus("正在上传会话…");
+        try
+        {
+            await vm.UploadConversationAsync(conversation.Id);
+            if (revision == _conversationMenuRevision) SetConversationMenuStatus("已备份到账号。");
+        }
+        catch (CloudAccountException ex)
+        {
+            if (revision == _conversationMenuRevision) SetConversationMenuStatus(ex.Message);
+        }
+        catch (Exception ex) when (AssistantConversationStore.IsStorageError(ex))
+        {
+            if (revision == _conversationMenuRevision) SetConversationMenuStatus("无法读取本机会话。" + AssistantViewModel.SafeError(ex, null));
+        }
+        finally { _uploadingConversation = false; }
     }
 
     private async void DeleteConversation_Click(object sender, RoutedEventArgs args)

@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using GitManager.Agent;
 using GitManager.App.ViewModels;
+using GitManager.Contracts;
 using Microsoft.Extensions.AI;
 
 namespace GitManager.App.Dialogs;
@@ -17,6 +18,7 @@ public sealed class AssistantSettingsWindow : Window
     private readonly CheckBox _includeProject;
     private readonly TextBox _excludedPaths;
     private readonly CheckBox _streaming;
+    private readonly TextBox _maxOutputTokens;
     private readonly CheckBox _mcp;
     private readonly TextBlock _status;
     private readonly AssistantViewModel _viewModel;
@@ -27,7 +29,13 @@ public sealed class AssistantSettingsWindow : Window
         Owner = owner; Title = "助手设置"; Width = 580; MaxHeight = 820; SizeToContent = SizeToContent.Height;
         MinWidth = 480; WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var panel = new StackPanel { Margin = new Thickness(22) };
-        panel.Children.Add(new TextBlock { Text = "连接模型", FontSize = 19, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 12) });
+        var heading = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
+        var account = new Button { Name = "CloudAccountButton", Content = "账号与备份…", Padding = new Thickness(10, 4, 10, 4) };
+        DockPanel.SetDock(account, Dock.Right);
+        account.Click += (_, _) => OpenCloudAccount();
+        heading.Children.Add(account);
+        heading.Children.Add(new TextBlock { Text = "连接模型", FontSize = 19, FontWeight = FontWeights.SemiBold });
+        panel.Children.Add(heading);
         panel.Children.Add(Note("支持 OpenAI 兼容的 Chat Completions 接口。Ollama、LM Studio 等本机服务请使用其兼容接口地址。"));
         _url = AddField(panel, "API 基础地址（例如 https://服务地址/v1）", viewModel.Options.BaseUrl, "AssistantBaseUrl");
         _model = AddField(panel, "模型名称（需支持工具调用）", viewModel.Options.Model, "AssistantModel");
@@ -45,6 +53,7 @@ public sealed class AssistantSettingsWindow : Window
         panel.Children.Add(Note("读取的内容会发给所选模型服务；启用 MCP 时也受这些设置约束。默认排除常见密钥、链接、依赖与构建目录。"));
         panel.Children.Add(Note("额外排除路径：每行一个仓库相对路径、目录或 * 通配模式，例如 private、*.local.json。对 Diff、项目阅读和 MCP 同时生效。"));
         panel.Children.Add(_excludedPaths); panel.Children.Add(_streaming);
+        _maxOutputTokens = AddField(panel, "最大输出 Token 数（256–8000）", Math.Clamp(viewModel.Options.MaxOutputTokens, 256, 8000).ToString(), "AssistantMaxOutputTokens");
         panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
         _mcp = new CheckBox { Name = "AssistantEnableMcp", Content = "启用本机 MCP，开放当前选中的仓库", IsChecked = viewModel.Options.EnableMcp, Margin = new Thickness(0, 0, 0, 8) };
         panel.Children.Add(_mcp);
@@ -71,9 +80,24 @@ public sealed class AssistantSettingsWindow : Window
         Content = new ScrollViewer { Content = panel, Background = Brushes.White, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Closed += (_, _) => { _closed.Cancel(); _closed.Dispose(); };
     }
-    private AssistantOptions CurrentOptions() => new(_url.Text.Trim(), _model.Text.Trim(), _includeDiff.IsChecked == true,
-        _mcp.IsChecked == true, _streaming.IsChecked == true, _viewModel.Options.MaxOutputTokens,
-        _includeProject.IsChecked == true, _excludedPaths.Text);
+    private AssistantOptions CurrentOptions()
+    {
+        if (!int.TryParse(_maxOutputTokens.Text, out var maxOutputTokens) || !SyncedPreferences.IsValidTokenLimit(maxOutputTokens))
+            throw new ArgumentException("最大输出 Token 数须为 256–8000。");
+        return new(_url.Text.Trim(), _model.Text.Trim(), _includeDiff.IsChecked == true,
+            _mcp.IsChecked == true, _streaming.IsChecked == true, maxOutputTokens, _includeProject.IsChecked == true, _excludedPaths.Text);
+    }
+
+    private void OpenCloudAccount()
+    {
+        var before = _viewModel.ExportPreferences();
+        new CloudAccountWindow(this, _viewModel).ShowDialog();
+        var after = _viewModel.ExportPreferences();
+        if (after == before) return;
+        _model.Text = after.Model;
+        _streaming.IsChecked = after.UseStreaming;
+        _maxOutputTokens.Text = after.MaxOutputTokens.ToString();
+    }
     private async void TestConnection(object sender, RoutedEventArgs args)
     {
         var button = (Button)sender;

@@ -1,5 +1,7 @@
 <Solution>
   <Project Path="src/GitManager.Core/GitManager.Core.csproj" />
+  <Project Path="src/GitManager.Contracts/GitManager.Contracts.csproj" />
+  <Project Path="src/GitManager.Server/GitManager.Server.csproj" />
   <Project Path="src/GitManager.App/GitManager.App.csproj" />
   <Project Path="src/GitManager.Services/GitManager.Services.csproj" />
   <Project Path="src/GitManager.Agent/GitManager.Agent.csproj" />

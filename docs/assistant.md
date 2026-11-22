@@ -67,6 +67,30 @@ erDiagram
 
 每条消息通过 `messages.conversation_id` 关联一条会话。删除会话时，SQLite 会级联删除消息。历史会话在侧栏中以只读方式显示已完成的提问、最终回答及提交草稿文本，已取消的请求、原始工具结果和可执行计划留在当前运行中。历史里的源码引用显示为文字。API 地址、模型及偏好使用同目录的 `assistant.json`，API Key 使用 Windows 凭据管理器。
 
+## 账号与备份接口
+
+`GitManager.Server` 使用 ASP.NET Core Minimal API、Identity 和 EF Core SQLite。`server.db` 与 WPF 的 `chats.db` 分别由服务端和客户端管理，备份通过 HTTP 传输。注册和登录使用 Identity，后续请求发送 `Authorization: Bearer <token>`。桌面端允许本机 HTTP 和 HTTPS 地址。
+
+```mermaid
+erDiagram
+    AspNetUsers ||--o{ ConversationBackups : "拥有"
+    ConversationBackups ||--|{ BackupMessages : "包含"
+    AspNetUsers ||--o| UserPreferences : "保存"
+```
+
+`ConversationBackups` 的 `(UserId, ClientConversationId)` 唯一。`BackupMessages` 使用 `(BackupId, Position)` 作为主键，通过外键级联删除。`UserPreferences.UserId` 同时是主键和用户外键。备份正文与元数据在同一事务中更新，本机恢复也在一个事务内写入。
+
+| 方法和路径 | 用途 |
+| --- | --- |
+| `POST /api/auth/register`、`POST /api/auth/login` | 用邮箱和密码注册、获取登录令牌 |
+| `GET /api/backups` | 获取当前账号的备份标题、仓库名、分支和时间 |
+| `PUT /api/backups/{conversationId}` | 上传用本机会话 ID 标识的完整快照 |
+| `GET /api/backups/{conversationId}` | 下载备份元数据及有序消息 |
+| `DELETE /api/backups/{conversationId}` | 删除当前账号的这份备份 |
+| `GET /api/me/preferences`、`PUT /api/me/preferences` | 下载、上传当前账号的助手偏好 |
+
+备份与偏好的所有查询都以登录令牌里的用户 ID 为准。每条消息包含角色和正文，仓库只传显示名和分支。恢复到一台新设备时，记录可在历史中查看，本机仓库路径留空。
+
 ## 配置 MCP
 
 在助手设置中启用本机 MCP，复制窗口提供的配置。发布脚本也会生成 `mcp-config.json`，例如：

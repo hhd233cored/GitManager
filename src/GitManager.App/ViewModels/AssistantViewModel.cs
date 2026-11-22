@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Input;
 using GitManager.Agent;
 using GitManager.App.Infrastructure;
+using GitManager.Contracts;
 using GitManager.Services;
 using Microsoft.Extensions.AI;
 
@@ -44,7 +45,7 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
     private IReadOnlyList<AssistantMessage> _viewedMessages = [];
     private int _conversationViewRevision;
     private bool _checkedLatestConversation;
-    private bool _deletingConversation;
+    private bool _changingStoredConversation;
     private bool _disposed;
     private bool _isOpen;
     private bool _isBusy;
@@ -86,6 +87,7 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
     }
     public event Action? SettingsRequested;
     private AssistantConversationStore? Conversations { get; }
+    internal CloudAccountClient CloudAccount { get; } = new();
     public Func<AssistantOptions, string?, IChatClient> ClientFactory { get; set; } = AssistantClientFactory.Create;
     public ObservableCollection<AssistantMessage> Messages { get; } = [];
     public IEnumerable<AssistantMessage> DisplayedMessages => IsViewingHistory ? _viewedMessages : Messages;
@@ -120,7 +122,7 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
     public RepositoryTools RepositoryTools => _workspace.RepositoryTools;
     public string Scope => _workspace.RepositoryTools.Context is { } context ? context.Name + " · " + context.Branch : "请先打开一个仓库";
     public string ConnectionLabel => string.IsNullOrWhiteSpace(Options.Model) ? "尚未配置模型 · 打开设置连接" : Options.Model;
-    public bool CanRun => !_disposed && !_deletingConversation && !IsBusy && !_workspace.IsBusy && _workspace.HasRepository;
+    public bool CanRun => !_disposed && !_changingStoredConversation && !IsBusy && !_workspace.IsBusy && _workspace.HasRepository;
     public string McpConfiguration => ToolJson.Serialize(new { mcpServers = new Dictionary<string, object> {
         ["gitmanager"] = new { command = Path.Combine(AppContext.BaseDirectory, "mcp", "GitManager.Mcp.exe"), args = Array.Empty<string>() } } });
     public string? ReadSecret(string endpoint) => _secrets.Read(endpoint);
@@ -261,6 +263,43 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
     internal async Task<IReadOnlyList<AssistantConversation>> ListConversationsAsync()
         => Conversations is { } conversations ? await Task.Run(conversations.List) : [];
 
+    internal async Task UploadConversationAsync(string id, CancellationToken cancellationToken = default)
+    {
+        if (Conversations is not { } conversations) throw new CloudAccountException("当前没有可用的本机会话数据库。");
+        var snapshot = await Task.Run(() => conversations.Export(id), cancellationToken)
+            ?? throw new CloudAccountException("找不到这段本机会话。");
+        await CloudAccount.UploadAsync(id, snapshot, cancellationToken);
+    }
+
+    internal async Task<ConversationRestore> RestoreConversationAsync(DownloadedBackup backup, bool replace, CancellationToken cancellationToken)
+    {
+        if (Conversations is not { } conversations) throw new CloudAccountException("当前没有可用的本机会话数据库。");
+        if (_disposed || _changingStoredConversation || IsBusy) throw new CloudAccountException("请等当前会话操作结束后再恢复备份。");
+        _changingStoredConversation = true;
+        _conversationViewRevision++;
+        CommandManager.InvalidateRequerySuggested();
+        try
+        {
+            var result = await Task.Run(() => conversations.Restore(backup, replace), cancellationToken);
+            if (result == ConversationRestore.Restored) InvalidateConversation(backup.Summary.ConversationId);
+            return result;
+        }
+        finally
+        {
+            _changingStoredConversation = false;
+            CommandManager.InvalidateRequerySuggested();
+        }
+    }
+
+    internal SyncedPreferences ExportPreferences() => new(Options.Model, Options.UseStreaming, Math.Clamp(Options.MaxOutputTokens, 256, 8000));
+
+    internal void ApplyPreferences(SyncedPreferences preferences) => SaveOptions(Options with
+    {
+        Model = preferences.Model,
+        UseStreaming = preferences.UseStreaming,
+        MaxOutputTokens = preferences.MaxOutputTokens
+    }, null, false);
+
     private async Task ShowLatestConversationAsync()
     {
         if (_checkedLatestConversation) return;
@@ -280,7 +319,7 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
 
     internal async Task ViewConversationAsync(AssistantConversation conversation)
     {
-        if (_disposed || _deletingConversation || !IsOpen || IsBusy || Conversations is not { } conversations) return;
+        if (_disposed || _changingStoredConversation || !IsOpen || IsBusy || Conversations is not { } conversations) return;
         if (conversation.Id == _conversationId) { ReturnToConversation(); return; }
         var revision = ++_conversationViewRevision;
         try
@@ -301,22 +340,27 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
 
     internal async Task DeleteConversationAsync(AssistantConversation conversation)
     {
-        if (_disposed || _deletingConversation || IsBusy || Conversations is not { } conversations) return;
-        _deletingConversation = true;
+        if (_disposed || _changingStoredConversation || IsBusy || Conversations is not { } conversations) return;
+        _changingStoredConversation = true;
         _conversationViewRevision++;
         CommandManager.InvalidateRequerySuggested();
         try
         {
             await Task.Run(() => conversations.Delete(conversation.Id));
-            if (_disposed) return;
-            if (_viewedConversation?.Id == conversation.Id) ReturnToConversation();
-            if (_conversationId == conversation.Id) ResetLiveConversation();
+            InvalidateConversation(conversation.Id);
         }
         finally
         {
-            _deletingConversation = false;
+            _changingStoredConversation = false;
             CommandManager.InvalidateRequerySuggested();
         }
+    }
+
+    private void InvalidateConversation(string id)
+    {
+        if (_disposed) return;
+        if (_viewedConversation?.Id == id) ReturnToConversation();
+        if (_conversationId == id) ResetLiveConversation();
     }
 
     private void ReturnToConversation()
@@ -435,6 +479,7 @@ public sealed class AssistantViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _disposed = true;
+        CloudAccount.SignOut();
         _cancellation?.Cancel();
         _workspace.PropertyChanged -= WorkspaceChanged;
         _workspace.RepositoryTools.PlanChanged -= OnPlanChanged;

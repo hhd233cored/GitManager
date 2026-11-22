@@ -88,6 +88,24 @@ MCP 默认关闭，在助手设置中启用后，复制窗口中的配置，或�
 
 助手可为同步、Rebase、Reset 和 Revert 生成计划。点击计划的“查看预览”后才可执行，覆盖历史还需明确勾选确认。过期或工作区/暂存区变化会使计划失效，同一计划不会重复执行。工具、架构及限制见 [助手接入说明](docs/assistant.md)。
 
+## 账号与备份
+
+在两个终端分别运行后端和桌面端：
+
+```powershell
+dotnet run --project src/GitManager.Server
+dotnet run --project src/GitManager.App
+```
+
+后端默认监听 `http://127.0.0.1:5187`，第一次启动会创建 `%LOCALAPPDATA%\GitManager\server.db`。可以用 `--DatabasePath` 指定独立的 SQLite 文件，例如 `dotnet run --project src/GitManager.Server -- --DatabasePath C:\temp\gitmanager-demo.db`。
+
+1. 在 WPF 里打开「助手 → 设置 → 账号与备份」，用邮箱和密码注册或登录。登录会话保存在应用内存中。
+2. 悬停助手侧栏的会话标题，点击对应会话的「备份」。再次上传同一条会话会更新云端副本。账号与备份面板的「刷新」可加载最新列表。
+3. 选中云端备份，点击「恢复到本机」，再从侧栏历史列表查看。若本机已有同一会话的不同版本，应用会提示是否替换。「删除云端备份」仅操作账号中的副本。
+4. 用「上传本机偏好」保存当前模型名称、流式输出和最大输出 Token 数。另一份客户端登录同一个账号后，可用「应用云端偏好」更新这三项。模型服务地址、API Key 和仓库内容共享设置由各设备管理。
+
+本机聊天照常使用 `chats.db`。后端地址可在账号窗口填写，也可用 `GITMANAGER_SERVER_URL` 为客户端指定默认地址。接口与数据库关系见 [账号与备份接口](docs/assistant.md#账号与备份接口)。
+
 ## 验证
 
 智能体检查使用独立测试仓库、本机模拟模型和真正的 MCP stdio 客户端，不调用付费模型。覆盖流式/非流式工具调用、上下文与内容共享范围、共享队列、快照校验、只审批不执行、重复请求和恢复点；界面检查覆盖侧栏、草稿及仓库切换取消。
@@ -97,6 +115,8 @@ dotnet run --project tests/GitManager.AgentChecks
 dotnet run --project tests/GitManager.UiChecks -- artifacts/preview-repository artifacts/assistant-screenshots --assistant-only
 dotnet run --project tests/GitManager.UiChecks -- artifacts/preview-repository artifacts/chat-presentation-screenshots --chat-ui-only
 ```
+
+账号与备份的端到端检查需连接一个独立的本机后端。启动后端时通过 `--DatabasePath` 指定空的测试数据库，再运行 `dotnet run --project tests/GitManager.UiChecks -- artifacts/preview-repository artifacts/cloud-checks --cloud-only`。检查会创建两个测试账号，并验证重复上传、恢复冲突、偏好同步和账号间的访问隔离。
 
 Git 集成检查会创建独立测试仓库与本地 bare 远程，覆盖图连接、分页连续性、较新支线居右、支线汇合后的颜色、根提交、合并、增删统计（含重命名与二进制文件）、批量路径历史匹配、资源管理器文件范围、中文与特殊路径、重命名、暂存、混合状态、勾选文件提交、未选文件暂存保留、大批量路径、克隆、分支发布及快进拉取。新增操作检查覆盖 Stash 部分文件与新增文件、稳定 ID、暂存恢复、三种 Reset、恢复点、变基/合并/Stash 冲突的继续与中止、重启检测、合并 Revert 主线及本地/远程版本覆盖和过期租约拒绝。
 

@@ -1,0 +1,75 @@
+<Window x:Class="GitManager.App.Dialogs.CloudAccountWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="账号与备份" Width="590" Height="625" MinWidth="530" MinHeight="550"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Border Background="White" Padding="18">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <StackPanel>
+                <TextBlock Text="后端地址" Margin="0,0,0,4" />
+                <TextBox x:Name="ServerAddress" AutomationProperties.Name="后端地址" Padding="7,4" />
+                <Grid Margin="0,9,0,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="10" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                    <StackPanel x:Name="EmailField">
+                        <TextBlock Text="邮箱" Margin="0,0,0,4" />
+                        <TextBox x:Name="AccountEmail" AutomationProperties.Name="邮箱" Padding="7,4" />
+                    </StackPanel>
+                    <StackPanel x:Name="PasswordField" Grid.Column="2">
+                        <TextBlock Text="密码" Margin="0,0,0,4" />
+                        <PasswordBox x:Name="AccountPassword" AutomationProperties.Name="密码" Padding="7,4" />
+                    </StackPanel>
+                </Grid>
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                    <Button x:Name="LoginButton" Content="登录" Click="Login_Click" Padding="12,4" Style="{StaticResource PrimaryButton}" Margin="0,0,7,0" />
+                    <Button x:Name="RegisterButton" Content="注册" Click="Register_Click" Padding="12,4" />
+                    <Button x:Name="LogoutButton" Content="退出登录" Click="Logout_Click" Padding="12,4" />
+                </StackPanel>
+            </StackPanel>
+            <DockPanel Grid.Row="1" Margin="0,16,0,6" LastChildFill="True">
+                <Button x:Name="RefreshButton" DockPanel.Dock="Right" Content="刷新" Click="Refresh_Click" Padding="8,2" />
+                <TextBlock Text="云端备份" FontWeight="SemiBold" VerticalAlignment="Center" />
+            </DockPanel>
+            <Border Grid.Row="2" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="4">
+                <Grid>
+                    <ListBox x:Name="BackupList" AutomationProperties.Name="云端备份列表" SelectionChanged="Backup_SelectionChanged">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="9,6">
+                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,3,0,0" TextTrimming="CharacterEllipsis">
+                                        <Run Text="{Binding Scope, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding LocalBackedUpAt, Mode=OneWay, StringFormat={}{0:yyyy-MM-dd HH:mm}}" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <TextBlock x:Name="EmptyBackups" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center"
+                               VerticalAlignment="Center" IsHitTestVisible="False" />
+                </Grid>
+            </Border>
+            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,0">
+                <Button x:Name="RestoreButton" Content="恢复到本机" Click="Restore_Click" Padding="9,4" Margin="0,0,7,0" />
+                <Button x:Name="DeleteButton" Content="删除云端备份…" Click="Delete_Click" Padding="9,4" />
+            </StackPanel>
+            <StackPanel Grid.Row="4" Margin="0,13,0,8">
+                <TextBlock Text="助手偏好" FontWeight="SemiBold" Margin="0,0,0,6" />
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="UploadPreferencesButton" Content="上传本机偏好" Click="UploadPreferences_Click" Padding="9,4" Margin="0,0,7,0" />
+                    <Button x:Name="ApplyPreferencesButton" Content="应用云端偏好" Click="ApplyPreferences_Click" Padding="9,4" />
+                </StackPanel>
+            </StackPanel>
+            <DockPanel Grid.Row="5" Margin="0,4,0,0">
+                <Button DockPanel.Dock="Right" Content="关闭" IsCancel="True" Padding="13,4" VerticalAlignment="Center" />
+                <TextBlock x:Name="Status" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,8,0" VerticalAlignment="Center" />
+            </DockPanel>
+        </Grid>
+    </Border>
+</Window>
