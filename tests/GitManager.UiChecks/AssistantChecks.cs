@@ -13,7 +13,7 @@ using Microsoft.Extensions.AI;
 
 internal static class AssistantChecks
 {
-    public static async Task RunAsync(MainWindow window, string output, Func<MainWindow, string, Task> render)
+    public static async Task RunAsync(MainWindow window, string output, Func<Window, string, Task> render)
     {
         var vm = window.ViewModel;
         var assistant = window.Assistant;
@@ -91,9 +91,33 @@ internal static class AssistantChecks
         finally { nativeSecrets.Delete(testEndpoint); }
         var dialog = new AssistantSettingsWindow(window, settingsVm);
         dialog.Show(); await Task.Delay(80);
-        Assert(Descendants(dialog).OfType<PasswordBox>().Count() == 1, "Credential editor must mask API key.");
+        Assert(Descendants(dialog).OfType<PasswordBox>().Single(box => box.IsVisible).Name == "AssistantApiKey", "Credential editor must mask API key.");
         Assert(Descendants(dialog).OfType<CheckBox>().Any(box => box.Name == "AssistantIncludeProject")
             && Descendants(dialog).OfType<TextBox>().Any(box => box.Name == "AssistantExcludedPaths"), "Project content settings missing.");
+        var tabs = Descendants(dialog).OfType<RadioButton>().ToArray();
+        var model = Descendants(dialog).OfType<TextBox>().Single(box => box.Name == "AssistantModel");
+        var cloud = Descendants(dialog).OfType<CloudAccountPane>().Single();
+        var positions = tabs.Select(tab => tab.TranslatePoint(new Point(0, 0), dialog)).ToArray();
+        Assert(tabs.Select(tab => tab.Content).SequenceEqual(new[] { "连接模型", "账号与备份", "MCP 设置" })
+            && positions.All(position => position.Y == positions[0].Y) && positions[0].X < positions[1].X && positions[1].X < positions[2].X,
+            "Settings choices are not in a single horizontal row.");
+        Assert(tabs[0].IsChecked == true && model.IsVisible && !cloud.IsVisible, "Model settings must be the default section.");
+        await render(dialog, Path.Combine(output, "assistant-model-settings.png"));
+        model.Text = "unsaved-draft";
+        var windowCount = Application.Current.Windows.Count;
+        tabs[1].IsChecked = true;
+        Assert(cloud.IsVisible && !model.IsVisible && Application.Current.Windows.Count == windowCount,
+            "Account settings did not open inside the settings window.");
+        tabs[2].IsChecked = true;
+        dialog.UpdateLayout();
+        var mcp = Descendants(dialog).OfType<CheckBox>().Single(box => box.Name == "AssistantEnableMcp");
+        var mcpConfig = Descendants(dialog).OfType<TextBox>().Single(box => box.Name == "McpConfigurationText");
+        Assert(mcp.IsVisible && mcpConfig.IsVisible && !cloud.IsVisible && !model.IsVisible, "MCP controls did not move to their own section.");
+        mcp.IsChecked = true;
+        await render(dialog, Path.Combine(output, "assistant-mcp-settings.png"));
+        tabs[0].IsChecked = true;
+        Assert(model.IsVisible && model.Text == "unsaved-draft" && mcp.IsChecked == true && !settingsVm.Options.EnableMcp,
+            "Switching sections lost draft values or saved changes prematurely.");
         await render(window, Path.Combine(output, "assistant-reading-trace.png"));
         dialog.Close();
         settingsVm.SaveOptions(settingsVm.Options with { IncludeDiff = false, UseStreaming = false, ExcludedPaths = "private\n*.local.json" }, null, false);
@@ -104,7 +128,7 @@ internal static class AssistantChecks
     }
 
     private static async Task CheckSavedConversationsAsync(MainWindow window, AssistantViewModel assistant,
-        AssistantSettingsStore settings, MemorySecrets secrets, string historyPath, string output, Func<MainWindow, string, Task> render)
+        AssistantSettingsStore settings, MemorySecrets secrets, string historyPath, string output, Func<Window, string, Task> render)
     {
         const string secret = "test-secret-never-serialize";
         Assert(assistant.ConversationTitle == "新会话", "An empty conversation was given a history title.");

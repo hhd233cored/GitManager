@@ -4,26 +4,34 @@ using GitManager.App.Infrastructure;
 using GitManager.App.ViewModels;
 using GitManager.Contracts;
 
-namespace GitManager.App.Dialogs;
+namespace GitManager.App.Controls;
 
-public partial class CloudAccountWindow : Window
+public partial class CloudAccountPane : UserControl
 {
     private readonly AssistantViewModel _assistant;
     private readonly CloudAccountClient _account;
-    private readonly CancellationTokenSource _closed = new();
+    private readonly CancellationToken _windowClosed;
+    private bool _activated;
     private bool _working;
 
-    public CloudAccountWindow(Window owner, AssistantViewModel assistant)
+    internal CloudAccountPane(AssistantViewModel assistant, CancellationToken windowClosed)
     {
         _assistant = assistant;
         _account = assistant.CloudAccount;
+        _windowClosed = windowClosed;
         InitializeComponent();
-        Owner = owner;
         ServerAddress.Text = _account.ServerAddress;
         AccountEmail.Text = _account.Email ?? "";
         UpdateControls();
-        Loaded += async (_, _) => { if (_account.Email is not null) await RunAsync(RefreshAsync); };
-        Closed += (_, _) => { _closed.Cancel(); _closed.Dispose(); };
+    }
+
+    internal event Action<SyncedPreferences>? PreferencesApplied;
+
+    internal void Activate()
+    {
+        if (_activated) return;
+        _activated = true;
+        if (_account.Email is not null) _ = RunAsync(RefreshAsync);
     }
 
     private async void Login_Click(object sender, RoutedEventArgs args) => await SignInAsync(register: false);
@@ -66,7 +74,7 @@ public partial class CloudAccountWindow : Window
             var result = await _assistant.RestoreConversationAsync(backup, replace: false, cancellationToken);
             if (result == ConversationRestore.Conflict)
             {
-                if (cancellationToken.IsCancellationRequested || MessageBox.Show(this, $"本机已有不同版本的「{backup.Summary.Title}」。用云端备份替换吗？",
+                if (cancellationToken.IsCancellationRequested || MessageBox.Show(Window.GetWindow(this), $"本机已有不同版本的「{backup.Summary.Title}」。用云端备份替换吗？",
                     "替换本机会话", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
                 result = await _assistant.RestoreConversationAsync(backup, replace: true, cancellationToken);
             }
@@ -77,7 +85,7 @@ public partial class CloudAccountWindow : Window
     private async void Delete_Click(object sender, RoutedEventArgs args)
     {
         if (BackupList.SelectedItem is not BackupSummary selection) return;
-        if (MessageBox.Show(this, $"删除「{selection.Title}」的云端备份？", "删除云端备份", MessageBoxButton.YesNo,
+        if (MessageBox.Show(Window.GetWindow(this), $"删除「{selection.Title}」的云端备份？", "删除云端备份", MessageBoxButton.YesNo,
             MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
         await RunAsync(async cancellationToken =>
         {
@@ -99,13 +107,14 @@ public partial class CloudAccountWindow : Window
         cancellationToken.ThrowIfCancellationRequested();
         if (preferences is null) { Status.Text = "这个账号还没有保存偏好。"; return; }
         _assistant.ApplyPreferences(preferences);
+        PreferencesApplied?.Invoke(preferences);
         Status.Text = "已应用云端偏好。";
     });
 
     private async Task RunAsync(Func<CancellationToken, Task> action)
     {
-        if (_working) return;
-        var cancellationToken = _closed.Token;
+        if (_working || _windowClosed.IsCancellationRequested) return;
+        var cancellationToken = _windowClosed;
         _working = true;
         Status.Text = "正在处理…";
         UpdateControls();

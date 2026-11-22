@@ -84,7 +84,7 @@ Changes 上方的 Stash 与恢复按钮，或 Repository 菜单，可以打开 S
 
 同步按钮下方显示实际的上次 Fetch 时间，例如 `Last fetched 27 minutes ago`，从仓库的 `FETCH_HEAD` 读取并定时更新，也支持 worktree。打开仓库仍先显示 Fetch，保留获取后再决定 Pull/Push 的流程。
 
-MCP 默认关闭，在助手设置中启用后，复制窗口中的配置，或使用发布目录的 `mcp-config.json`。GitManager 需保持运行；MCP 服务无需模型密钥，外部客户端使用自己的模型。UI、助手和 MCP 共用仓库操作队列，实际 Git 操作复用已有恢复点及冲突处理。
+MCP 默认关闭。可在「助手 → 设置 → MCP 设置」中启用并复制配置，也可以使用发布目录的 `mcp-config.json`。GitManager 需保持运行；MCP 服务无需模型密钥，外部客户端使用自己的模型。UI、助手和 MCP 共用仓库操作队列，实际 Git 操作复用已有恢复点及冲突处理。
 
 助手可为同步、Rebase、Reset 和 Revert 生成计划。点击计划的“查看预览”后才可执行，覆盖历史还需明确勾选确认。过期或工作区/暂存区变化会使计划失效，同一计划不会重复执行。工具、架构及限制见 [助手接入说明](docs/assistant.md)。
 
@@ -104,7 +104,7 @@ dotnet run --project src/GitManager.App
 3. 选中云端备份，点击「恢复到本机」，再从侧栏历史列表查看。若本机已有同一会话的不同版本，应用会提示是否替换。「删除云端备份」仅操作账号中的副本。
 4. 用「上传本机偏好」保存当前模型名称、流式输出和最大输出 Token 数。另一份客户端登录同一个账号后，可用「应用云端偏好」更新这三项。模型服务地址、API Key 和仓库内容共享设置由各设备管理。
 
-本机聊天照常使用 `chats.db`。后端地址可在账号窗口填写，也可用 `GITMANAGER_SERVER_URL` 为客户端指定默认地址。接口与数据库关系见 [账号与备份接口](docs/assistant.md#账号与备份接口)。
+本机聊天照常使用 `chats.db`。后端地址可在「账号与备份」页填写，也可用 `GITMANAGER_SERVER_URL` 为客户端指定默认地址。接口与数据库关系见 [账号与备份接口](docs/assistant.md#账号与备份接口)。
 
 ## 验证
 

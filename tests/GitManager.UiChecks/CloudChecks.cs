@@ -36,18 +36,19 @@ internal static class CloudChecks
         first.SaveOptions(first.Options with { Model = "cloud-model", UseStreaming = false, MaxOutputTokens = 4000 }, null, false);
         second.SaveOptions(second.Options with { BaseUrl = "http://127.0.0.1:1234/v1", IncludeDiff = false, ExcludedPaths = "private" }, null, false);
 
-        var accountWindow = new CloudAccountWindow(window, first);
+        var accountWindow = new AssistantSettingsWindow(window, first);
         accountWindow.Show();
         try
         {
-            ((TextBox)accountWindow.FindName("ServerAddress")).Text = server;
-            ((TextBox)accountWindow.FindName("AccountEmail")).Text = email;
-            ((PasswordBox)accountWindow.FindName("AccountPassword")).Password = password;
-            Click(accountWindow, "RegisterButton");
-            await UntilAsync(() => ((Button)accountWindow.FindName("LogoutButton")).IsEnabled, "register and sign in via WPF");
+            var account = ShowAccountSettings(accountWindow);
+            ((TextBox)account.FindName("ServerAddress")).Text = server;
+            ((TextBox)account.FindName("AccountEmail")).Text = email;
+            ((PasswordBox)account.FindName("AccountPassword")).Password = password;
+            Click(account, "RegisterButton");
+            await UntilAsync(() => ((Button)account.FindName("LogoutButton")).IsEnabled, "register and sign in via WPF");
             Assert(first.CloudAccount.Email == email, "The registered account did not sign in.");
-            Click(accountWindow, "UploadPreferencesButton");
-            await UntilAsync(() => ((TextBlock)accountWindow.FindName("Status")).Text.StartsWith("已上传", StringComparison.Ordinal), "upload preferences from WPF");
+            Click(account, "UploadPreferencesButton");
+            await UntilAsync(() => ((TextBlock)account.FindName("Status")).Text.StartsWith("已上传", StringComparison.Ordinal), "upload preferences from WPF");
         }
         finally { accountWindow.Close(); }
 
@@ -80,20 +81,26 @@ internal static class CloudChecks
         Assert(backup.Messages.Length == 4 && backup.Messages[^1] == new BackupMessage("assistant", "回答二"), "Replacing a backup did not keep message order or latest contents.");
 
         await second.CloudAccount.SignInAsync(server, email, password, register: false, default);
-        var restoreWindow = new CloudAccountWindow(window, second);
+        var restoreWindow = new AssistantSettingsWindow(window, second);
         restoreWindow.Show();
         try
         {
-            var list = (ListBox)restoreWindow.FindName("BackupList");
+            var addressDraft = Descendants(restoreWindow).OfType<TextBox>().Single(box => box.Name == "AssistantBaseUrl");
+            addressDraft.Text = "http://localhost:9000/v1";
+            var account = ShowAccountSettings(restoreWindow);
+            var list = (ListBox)account.FindName("BackupList");
             await UntilAsync(() => list.IsEnabled && list.Items.Count == 1, "load backups in another client");
             await render(restoreWindow, Path.Combine(output, "cloud-account.png"));
             list.SelectedIndex = 0;
-            Click(restoreWindow, "RestoreButton");
-            await UntilAsync(() => ((TextBlock)restoreWindow.FindName("Status")).Text.StartsWith("已恢复", StringComparison.Ordinal), "restore from WPF");
+            Click(account, "RestoreButton");
+            await UntilAsync(() => ((TextBlock)account.FindName("Status")).Text.StartsWith("已恢复", StringComparison.Ordinal), "restore from WPF");
             Assert(secondStore.List().Single().RepositoryPath.Length == 0 && secondStore.Read(id).Last().Text == "回答二",
                 "Restored transcript lost its messages or inherited a device-specific repository path.");
-            Click(restoreWindow, "ApplyPreferencesButton");
-            await UntilAsync(() => ((TextBlock)restoreWindow.FindName("Status")).Text == "已应用云端偏好。", "apply preferences in another client");
+            Click(account, "ApplyPreferencesButton");
+            await UntilAsync(() => ((TextBlock)account.FindName("Status")).Text == "已应用云端偏好。", "apply preferences in another client");
+            Descendants(restoreWindow).OfType<RadioButton>().Single(tab => tab.Name == "ModelSettingsTab").IsChecked = true;
+            Assert(Descendants(restoreWindow).OfType<TextBox>().Single(box => box.Name == "AssistantModel").Text == "cloud-model"
+                && addressDraft.Text == "http://localhost:9000/v1", "Applying preferences did not refresh the model page or erased its unrelated draft.");
         }
         finally { restoreWindow.Close(); }
 
@@ -125,6 +132,12 @@ internal static class CloudChecks
     }
 
     private static void Click(FrameworkElement scope, string name) => ((Button)scope.FindName(name)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+    private static CloudAccountPane ShowAccountSettings(AssistantSettingsWindow window)
+    {
+        Descendants(window).OfType<RadioButton>().Single(tab => tab.Name == "AccountSettingsTab").IsChecked = true;
+        return Descendants(window).OfType<CloudAccountPane>().Single();
+    }
 
     private static async Task UntilAsync(Func<bool> condition, string action)
     {

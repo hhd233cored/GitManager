@@ -1,8 +1,6 @@
-<Window x:Class="GitManager.App.Dialogs.CloudAccountWindow"
+<UserControl x:Class="GitManager.App.Controls.CloudAccountPane"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="账号与备份" Width="590" Height="625" MinWidth="530" MinHeight="550"
-        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Border Background="White" Padding="18">
         <Grid>
             <Grid.RowDefinitions>
@@ -66,10 +64,7 @@
                     <Button x:Name="ApplyPreferencesButton" Content="应用云端偏好" Click="ApplyPreferences_Click" Padding="9,4" />
                 </StackPanel>
             </StackPanel>
-            <DockPanel Grid.Row="5" Margin="0,4,0,0">
-                <Button DockPanel.Dock="Right" Content="关闭" IsCancel="True" Padding="13,4" VerticalAlignment="Center" />
-                <TextBlock x:Name="Status" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,8,0" VerticalAlignment="Center" />
-            </DockPanel>
+            <TextBlock x:Name="Status" Grid.Row="5" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" />
         </Grid>
     </Border>
-</Window>
+</UserControl>

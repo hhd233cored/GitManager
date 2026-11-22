@@ -93,7 +93,7 @@ erDiagram
 
 ## 配置 MCP
 
-在助手设置中启用本机 MCP，复制窗口提供的配置。发布脚本也会生成 `mcp-config.json`，例如：
+在助手设置顶部选择「MCP 设置」，启用本机 MCP 并复制配置。发布脚本也会生成 `mcp-config.json`，例如：
 
 ```json
 {
